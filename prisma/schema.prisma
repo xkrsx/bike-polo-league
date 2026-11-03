@@ -12,22 +12,25 @@ enum TeamAssigned {
 }
 
 model Player {
-  id            String       @id @default(cuid())
-  name          String
-  isRookie      Boolean      @default(false)
-  createdAt     DateTime     @default(now())
-  refereedGames Game[]       @relation("GameReferee")
-  gameStats     GamePlayer[]
+  id             String       @id @default(cuid())
+  name           String
+  isRookie       Boolean      @default(false)
+  extraPoints    Int          @default(0) // Np. za przebranie / akcje specjalne
+  podiumPoints   Int          @default(0) // Np. +15, +10, +5 za finały
+  createdAt      DateTime     @default(now())
+  refereedGames  Game[]       @relation("GameReferee")
+  gameStats      GamePlayer[]
 }
 
 model Game {
-  id         String       @id @default(cuid())
-  scoreTeamA Int
-  scoreTeamB Int
-  refereeId  String?
-  referee    Player?      @relation("GameReferee", fields: [refereeId], references: [id])
-  createdAt  DateTime     @default(now())
-  players    GamePlayer[]
+  id           String       @id @default(cuid())
+  date         DateTime     @default(now()) // Data rozegrania meczu (kolejka)
+  scoreTeamA   Int
+  scoreTeamB   Int
+  refereeId    String?
+  referee      Player?      @relation("GameReferee", fields: [refereeId], references: [id])
+  createdAt    DateTime     @default(now())
+  players      GamePlayer[]
 }
 
 model GamePlayer {
@@ -35,6 +38,7 @@ model GamePlayer {
   playerId     String
   teamAssigned TeamAssigned
   goals        Int           @default(0)
+  ownGoals     Int          @default(0)
   fouls        Int?          @default(0)
   game         Game          @relation(fields: [gameId], references: [id])
   player       Player        @relation(fields: [playerId], references: [id])
