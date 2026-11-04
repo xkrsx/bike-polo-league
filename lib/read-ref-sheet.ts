@@ -10,7 +10,10 @@ export async function readMatchedRefSheets(
   players: PlayerCandidate[],
 ): Promise<MatchedRefGame[]> {
   if (visionConfigured()) {
-    const located = await readRefSheetWithVision(jpeg);
+    const located = await readRefSheetWithVision(
+      jpeg,
+      players.map((player) => player.name),
+    );
 
     return located
       .slice(0, MAX_GAMES_PER_SHEET)
@@ -22,9 +25,17 @@ export async function readMatchedRefSheets(
   return matchFilledSheets(page.text, page.words, players).slice(0, MAX_GAMES_PER_SHEET);
 }
 
-export async function readSingleRefSheet(jpeg: Buffer): Promise<ParsedRefSheet> {
+export async function readSingleRefSheet(
+  jpeg: Buffer,
+  players: PlayerCandidate[] = [],
+): Promise<ParsedRefSheet> {
   if (visionConfigured()) {
-    return collapseLocatedSheets(await readRefSheetWithVision(jpeg));
+    return collapseLocatedSheets(
+      await readRefSheetWithVision(
+        jpeg,
+        players.map((player) => player.name),
+      ),
+    );
   }
 
   return parseRefSheetOcr(await recognizeRefSheet(jpeg));

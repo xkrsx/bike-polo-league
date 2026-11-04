@@ -166,6 +166,24 @@ function rankPlayers(query: string, players: PlayerCandidate[]): RankedPlayer[] 
   return ranked;
 }
 
+function longerRosterNames(query: string, players: PlayerCandidate[]): PlayerCandidate[] {
+  if (query.length < 3) {
+    return [];
+  }
+
+  return players.filter((player) => {
+    const name = normalizeName(player.name);
+
+    if (!name || name === query) {
+      return false;
+    }
+
+    const parts = name.split(" ").filter(Boolean);
+
+    return parts.some((part) => part === query || part.startsWith(query)) || name.includes(query);
+  });
+}
+
 function closeContenders(ranked: RankedPlayer[]): RankedPlayer[] {
   const best = ranked[0];
 
@@ -190,13 +208,24 @@ export function resolvePlayerName(
 
   const ranked = rankPlayers(normalized, players);
   const best = ranked[0];
+  const longer = longerRosterNames(normalized, players);
 
-  if (!best) {
-    return { kind: "none" };
+  if (longer.length > 1) {
+    return { kind: "ambiguous", players: longer.slice(0, 8) };
   }
 
-  if (best.match.kind === "exact") {
+  if (!best) {
+    return longer.length === 1
+      ? { kind: "similar", player: longer[0], reason: "nickname" }
+      : { kind: "none" };
+  }
+
+  if (best.match.kind === "exact" && longer.length === 0) {
     return { kind: "exact", player: best.player };
+  }
+
+  if (longer.length === 1) {
+    return { kind: "similar", player: longer[0], reason: "nickname" };
   }
 
   const contenders = closeContenders(ranked);
@@ -284,6 +313,19 @@ export function classifyPlayerName(
 
   const ranked = rankPlayers(normalized, players);
   const best = ranked[0];
+  const longer = longerRosterNames(normalized, players);
+
+  if (longer.length > 1) {
+    return {
+      confidence: "low",
+      player: null,
+      suggestions: longer.slice(0, 8),
+    };
+  }
+
+  if (longer.length === 1 && (!best || best.match.kind !== "typo" || best.player.id === longer[0].id)) {
+    return { confidence: "high", player: longer[0], suggestions: [] };
+  }
 
   if (!best) {
     const loose = looseSuggestion(normalized, players);

@@ -1,5 +1,6 @@
 import {
   classifyPlayerName,
+  normalizeName,
   type PlayerCandidate,
 } from "@/lib/player-match";
 import {
@@ -17,10 +18,12 @@ export interface SheetNameSuggestion {
 
 export interface SheetNameMatch {
   rawName: string;
+  name: string | null;
   playerId: string | null;
   playerName: string | null;
   confidence: "high" | "low" | "none";
   suggestions: SheetNameSuggestion[];
+  matchedAs: string | null;
 }
 
 export interface MatchedSheetPlayer extends SheetNameMatch {
@@ -39,24 +42,108 @@ export interface MatchedRefGame {
   notes: string[];
 }
 
-function annotateName(rawName: string, players: PlayerCandidate[]): SheetNameMatch {
+function rosterNameMatches(rosterName: string, token: string): boolean {
+  const name = normalizeName(rosterName);
+  const key = normalizeName(token);
+
+  if (!name || !key || key.length < 3) {
+    return false;
+  }
+
+  if (name === key) {
+    return true;
+  }
+
+  const parts = name.split(" ").filter(Boolean);
+
+  if (parts.some((part) => part === key || part.startsWith(key))) {
+    return true;
+  }
+
+  return name.includes(key);
+}
+
+function rosterSuggestions(
+  names: readonly string[] | undefined,
+  players: PlayerCandidate[],
+): SheetNameSuggestion[] {
+  const found: SheetNameSuggestion[] = [];
+
+  for (const name of names ?? []) {
+    for (const player of players) {
+      if (!rosterNameMatches(player.name, name) || found.some((item) => item.id === player.id)) {
+        continue;
+      }
+
+      found.push({ id: player.id, name: player.name });
+    }
+  }
+
+  return found.slice(0, 8);
+}
+
+function annotateName(
+  rawName: string,
+  players: PlayerCandidate[],
+  hinted: readonly string[] = [],
+): SheetNameMatch {
   const classified = classifyPlayerName(rawName, players);
+  const expanded = rosterSuggestions([rawName, ...hinted], players);
+  const fuller = expanded.filter((player) => normalizeName(player.name) !== normalizeName(rawName));
+
+  if (fuller.length > 1) {
+    return {
+      rawName,
+      name: null,
+      playerId: null,
+      playerName: null,
+      confidence: "low",
+      suggestions: fuller,
+      matchedAs: null,
+    };
+  }
+
+  if (fuller.length === 1) {
+    return {
+      rawName,
+      name: fuller[0].name,
+      playerId: fuller[0].id,
+      playerName: fuller[0].name,
+      confidence: "high",
+      suggestions: [],
+      matchedAs: rawName,
+    };
+  }
+
+  const fromHints = rosterSuggestions(hinted, players).filter(
+    (player) => normalizeName(player.name) !== normalizeName(rawName),
+  );
+  const suggestions =
+    classified.suggestions.length > 0
+      ? classified.suggestions.map((player) => ({
+          id: player.id,
+          name: player.name,
+        }))
+      : fromHints;
+  const resolved =
+    classified.confidence === "high" && classified.player && suggestions.length === 0
+      ? classified.player
+      : null;
 
   return {
     rawName,
-    playerId: classified.player?.id ?? null,
-    playerName: classified.player?.name ?? null,
-    confidence: classified.confidence,
-    suggestions: classified.suggestions.map((player) => ({
-      id: player.id,
-      name: player.name,
-    })),
+    name: resolved?.name ?? null,
+    playerId: resolved?.id ?? null,
+    playerName: resolved?.name ?? null,
+    confidence: resolved ? "high" : classified.confidence,
+    suggestions,
+    matchedAs: resolved ? rawName : null,
   };
 }
 
 function annotatePlayer(line: SheetPlayerLine, players: PlayerCandidate[]): MatchedSheetPlayer {
   return {
-    ...annotateName(line.name, players),
+    ...annotateName(line.name, players, line.suggestions),
     goals: line.goals,
     fouls: line.fouls,
     penalties: line.penalties,
@@ -70,7 +157,9 @@ export function annotateRefSheet(
 ): MatchedRefGame {
   return {
     region,
-    referees: sheet.referees.map((name) => annotateName(name, players)),
+    referees: sheet.referees.map((name, index) =>
+      annotateName(name, players, sheet.refereeSuggestions?.[index]),
+    ),
     teamA: sheet.teamA.map((line) => annotatePlayer(line, players)),
     teamB: sheet.teamB.map((line) => annotatePlayer(line, players)),
     scoreTeamA: sheet.scoreTeamA,

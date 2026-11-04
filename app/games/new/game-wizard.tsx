@@ -25,6 +25,7 @@ interface DraftPerson {
   playerId: string;
   name: string;
   rawName: string;
+  matchedAs: string | null;
   suggestions: Suggestion[];
   preselectedId: string | null;
   rookie: boolean;
@@ -74,6 +75,7 @@ function emptyPerson(): DraftPerson {
     playerId: "new",
     name: "",
     rawName: "",
+    matchedAs: null,
     suggestions: [],
     preselectedId: null,
     rookie: false,
@@ -95,6 +97,18 @@ function personFrom(match: SheetNameMatch | undefined, roster: PlayerCandidate[]
     return emptyPerson();
   }
 
+  if (match.confidence === "low" && match.suggestions.length > 1) {
+    return {
+      playerId: "new",
+      name: cleanDisplayName(rawName),
+      rawName,
+      matchedAs: null,
+      suggestions: match.suggestions,
+      preselectedId: null,
+      rookie: false,
+    };
+  }
+
   const linked =
     match.confidence === "high" && match.playerId
       ? (roster.find((player) => player.id === match.playerId) ?? null)
@@ -107,6 +121,7 @@ function personFrom(match: SheetNameMatch | undefined, roster: PlayerCandidate[]
       playerId: chosen.id,
       name: chosen.name,
       rawName,
+      matchedAs: match.matchedAs,
       suggestions: [],
       preselectedId: chosen.id,
       rookie: false,
@@ -122,6 +137,7 @@ function personFrom(match: SheetNameMatch | undefined, roster: PlayerCandidate[]
     playerId: "new",
     name: cleanDisplayName(rawName),
     rawName,
+    matchedAs: null,
     suggestions: suggestionSource,
     preselectedId: null,
     rookie: false,
@@ -353,20 +369,24 @@ function PlayerFields({
   players: PlayerCandidate[];
   onChange: (person: DraftPerson) => void;
 }) {
+  const typedName = normalizeName(person.rawName || person.name);
   const live =
-    person.playerId === "new" && normalizeName(person.name)
-      ? classifyPlayerName(person.name, players)
-      : null;
+    person.suggestions.length > 1 || person.playerId !== "new" || !normalizeName(person.name)
+      ? null
+      : classifyPlayerName(person.name, players);
   const visibleSuggestions = (
-    live
-      ? [
-          ...(live.player ? [{ id: live.player.id, name: live.player.name }] : []),
-          ...live.suggestions,
-        ]
-      : person.suggestions
+    person.suggestions.length > 1
+      ? person.suggestions
+      : live
+        ? [
+            ...(live.player ? [{ id: live.player.id, name: live.player.name }] : []),
+            ...live.suggestions,
+          ]
+        : person.suggestions
   ).filter(
     (suggestion, index, all) =>
       suggestion.id !== person.playerId &&
+      normalizeName(suggestion.name) !== typedName &&
       all.findIndex((item) => item.id === suggestion.id) === index,
   );
   const currentName = displayedName(person, players);
@@ -426,9 +446,14 @@ function PlayerFields({
         <input type="hidden" name={nameName} value={currentName} />
       )}
       {person.preselectedId && person.playerId === person.preselectedId ? (
-        <p className="text-xs text-zinc-500">Matched from the sheet.</p>
+        <p className="text-xs text-zinc-500">
+          {person.matchedAs && normalizeName(person.matchedAs) !== normalizeName(currentName)
+            ? `Matched from the sheet, read as ${person.matchedAs}.`
+            : "Matched from the sheet."}
+        </p>
+      ) : readAs ? (
+        <p className="text-xs text-zinc-500">Read as {readAs}.</p>
       ) : null}
-      {readAs ? <p className="text-xs text-zinc-500">Read as {readAs}.</p> : null}
       {visibleSuggestions.map((suggestion) => (
         <button
           key={suggestion.id}

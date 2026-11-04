@@ -12,7 +12,7 @@ import {
   parseRefSheetOcr,
   readableSheetName,
 } from "../lib/ref-sheet-ocr";
-import { matchFilledSheets } from "../lib/ref-sheet-match";
+import { annotateRefSheet, matchFilledSheets } from "../lib/ref-sheet-match";
 import { imageTypeForUpload } from "../lib/ref-sheet-storage";
 import {
   buildVisionRequest,
@@ -67,8 +67,12 @@ assert.equal(parseRefSheetCards(`${oneCard}\nGus`)[0]?.notes.join(" "), "");
 assert.equal(readableSheetName("Anna"), "Anna");
 assert.equal(readableSheetName("ALEX"), "ALEX");
 assert.equal(readableSheetName("HAYA"), "HAYA");
+assert.equal(readableSheetName("MAYA"), "MAYA");
+assert.equal(readableSheetName("KUBA"), "KUBA");
 assert.equal(readableSheetName("NOVA"), "NOVA");
 assert.equal(readableSheetName("KUBAS"), "KUBAS");
+assert.equal(readableSheetName("X"), null);
+assert.equal(readableSheetName("ALEX X"), null);
 assert.equal(readableSheetName("Ed Lu"), "Ed Lu");
 assert.equal(readableSheetName("le Se"), null);
 assert.equal(readableSheetName("CU RS CA"), null);
@@ -220,6 +224,18 @@ assert.equal(classifyPlayerName("Benn", players).suggestions.length, 0);
 assert.equal(classifyPlayerName("Sam", players).confidence, "low");
 assert.equal(classifyPlayerName("Sam", players).suggestions.length, 2);
 assert.equal(classifyPlayerName("Zed", players).confidence, "none");
+const quinnNames = [
+  { id: "quinn", name: "Quinn" },
+  { id: "nova", name: "Nova Quinn" },
+  { id: "adler", name: "Quinn Adler" },
+];
+const quinnClass = classifyPlayerName("QUINN", quinnNames);
+assert.equal(quinnClass.confidence, "low");
+assert.equal(quinnClass.player, null);
+assert.deepEqual(
+  quinnClass.suggestions.map((player) => player.name),
+  ["Nova Quinn", "Quinn Adler"],
+);
 
 const matched = matchFilledSheets(oneCard, [], players);
 assert.equal(matched.length, 1);
@@ -306,17 +322,33 @@ assert.equal(
 );
 
 const vision = buildVisionRequest(Buffer.from("jpeg"));
-const imagePart = vision.messages[1].content[1];
-assert.equal(imagePart.type, "image_url");
-assert.equal(imagePart.image_url.detail, "high");
-assert.match(imagePart.image_url.url, /^data:image\/jpeg;base64,/);
-assert.deepEqual(vision.response_format, { type: "json_object" });
-assert.equal(vision.messages[0].content, VISION_SYSTEM_PROMPT);
-assert.match(vision.messages[0].content, /Never calculate scores from goals/);
-assert.match(vision.messages[0].content, /Handwritten text under NAME\/NUMBER: 'ALEX' -> Keep/);
-assert.match(vision.messages[0].content, /Printed text under NAME\/NUMBER: 'TEAM NAME:' -> Discard\/Ignore/);
-assert.match(vision.messages[1].content[0].text, /"score": 2/);
-assert.doesNotMatch(vision.messages[0].content, /was left off/);
+const imagePart = vision.messages[0].content[1];
+assert.equal(vision.model, "claude-sonnet-5-5");
+assert.equal(imagePart.type, "image");
+assert.equal(imagePart.mediaType, "image/jpeg");
+assert.ok(Buffer.isBuffer(imagePart.image));
+assert.equal(vision.system, VISION_SYSTEM_PROMPT);
+assert.match(vision.system, /HANDLE PARTIAL \/ EMPTY CARDS/);
+assert.match(vision.system, /right-side column/);
+assert.match(vision.system, /ALLOW MISSING FIELDS/);
+assert.match(vision.system, /PLAYER NAME MATCHING & ROSTER RESOLUTION/);
+assert.match(vision.system, /exact canonical name from the known roster/);
+assert.match(vision.system, /Nova Quinn/);
+assert.match(vision.system, /never repeating the raw ambiguous token alone/);
+assert.match(vision.system, /matchedAs is "MAYA"/);
+assert.match(vision.messages[0].content[0].text, /"matchedAs": "MAYA"/);
+assert.match(vision.system, /suggestions/);
+assert.match(vision.messages[0].content[0].text, /"suggestions": \["Nova Quinn", "Quinn Adler"\]/);
+assert.match(vision.system, /count filled\/shaded circles in the 9-circle row/);
+assert.match(vision.system, /CROSSED-OUT MARKS/);
+assert.match(vision.system, /Could not read this ref sheet/);
+assert.match(vision.system, /all 4 slots\/games/);
+assert.match(vision.messages[0].content[0].text, /"score": 2/);
+assert.match(vision.messages[0].content[0].text, /Active player roster: none provided/);
+const rostered = buildVisionRequest(Buffer.from("jpeg"), undefined, ["Kuba", "Alex Example", "Kuba"]);
+assert.match(rostered.messages[0].content[0].text, /Alex Example\nKuba/);
+assert.doesNotMatch(rostered.messages[0].content[0].text, /Kuba\nKuba/);
+assert.doesNotMatch(vision.system, /was left off/);
 assert.deepEqual(parseVisionPayload('To Ta was left off.\n{"games":[]}'), { games: [] });
 const visionCards = normalizeVisionCards({
   cards: [
@@ -439,6 +471,174 @@ const missingBox = normalizeVisionCards({
 });
 assert.equal(missingBox[0]?.sheet.scoreTeamA, null);
 assert.equal(missingBox[0]?.sheet.scoreTeamB, null);
+
+const partialColumn = normalizeVisionCards({
+  games: [
+    {
+      referees: [null, ""],
+      team1: {
+        players: [{ name: "Anna", goals: 2, penalties: null }],
+        score: 2,
+      },
+      team2: { players: [], score: null },
+    },
+    {
+      referees: [],
+      team1: {
+        players: [{ name: "", goals: null, penalties: null }],
+        score: null,
+      },
+      team2: null,
+    },
+    null,
+    {
+      referees: null,
+      team1: null,
+      team2: null,
+    },
+  ],
+});
+assert.deepEqual(
+  partialColumn.map((card) => card.region),
+  ["top-left"],
+);
+assert.deepEqual(partialColumn[0]?.sheet.referees, []);
+assert.equal(partialColumn[0]?.sheet.teamA[0]?.name, "Anna");
+assert.equal(partialColumn[0]?.sheet.scoreTeamA, 2);
+
+const ambiguousSheet = normalizeVisionCards({
+  games: [
+    {
+      referees: [
+        { name: null, written: "QUINN", suggestions: ["Nova Quinn", "Quinn Adler"] },
+        "Ben",
+      ],
+      team1: {
+        players: [
+          {
+            name: null,
+            written: "QUINN",
+            suggestions: ["Nova Quinn", "Quinn Adler"],
+            goals: 1,
+            penalties: 0,
+          },
+          { name: "Ben", suggestions: [], goals: 0, penalties: 0 },
+        ],
+        score: 2,
+      },
+      team2: {
+        players: [{ name: "Anna Lee", suggestions: [], goals: 2, penalties: 0 }],
+        score: 1,
+      },
+    },
+    null,
+    { referees: [], team1: null, team2: null },
+    { referees: null, team1: { players: [], score: null }, team2: null },
+  ],
+});
+assert.deepEqual(
+  ambiguousSheet.map((card) => card.region),
+  ["top-left"],
+);
+assert.equal(ambiguousSheet[0]?.sheet.teamA[0]?.name, "QUINN");
+assert.deepEqual(ambiguousSheet[0]?.sheet.teamA[0]?.suggestions, ["Nova Quinn", "Quinn Adler"]);
+assert.deepEqual(ambiguousSheet[0]?.sheet.teamA[1]?.suggestions, []);
+assert.deepEqual(ambiguousSheet[0]?.sheet.referees, ["QUINN", "Ben"]);
+const quinnRoster = [
+  { id: "nova", name: "Nova Quinn" },
+  { id: "adler", name: "Quinn Adler" },
+  { id: "ben", name: "Ben" },
+  { id: "anna", name: "Anna Lee" },
+];
+const quinnGame = annotateRefSheet("top-left", ambiguousSheet[0]!.sheet, quinnRoster);
+assert.equal(quinnGame.teamA[0]?.playerId, null);
+assert.equal(quinnGame.teamA[0]?.name, null);
+assert.equal(quinnGame.teamA[0]?.matchedAs, null);
+assert.equal(quinnGame.teamA[0]?.confidence, "low");
+assert.deepEqual(
+  quinnGame.teamA[0]?.suggestions.map((player) => player.name),
+  ["Nova Quinn", "Quinn Adler"],
+);
+assert.equal(quinnGame.teamA[1]?.playerId, "ben");
+assert.equal(quinnGame.teamA[1]?.name, "Ben");
+assert.equal(quinnGame.teamA[1]?.matchedAs, "Ben");
+assert.deepEqual(quinnGame.teamA[1]?.suggestions, []);
+assert.equal(quinnGame.teamB[0]?.playerId, "anna");
+assert.equal(quinnGame.teamB[0]?.suggestions.length, 0);
+assert.equal(quinnGame.referees[0]?.playerId, null);
+assert.deepEqual(
+  quinnGame.referees[0]?.suggestions.map((player) => player.name),
+  ["Nova Quinn", "Quinn Adler"],
+);
+assert.equal(quinnGame.referees[1]?.playerId, "ben");
+
+const mayaSheet = normalizeVisionCards({
+  games: [
+    {
+      referees: [],
+      team1: {
+        players: [
+          {
+            name: "Maya Ortiz",
+            written: "MAYA",
+            matchedAs: "MAYA",
+            suggestions: [],
+            goals: 2,
+            penalties: 0,
+          },
+        ],
+        score: 2,
+      },
+      team2: { players: [], score: null },
+    },
+  ],
+});
+const mayaGame = annotateRefSheet("top-left", mayaSheet[0]!.sheet, [
+  { id: "maya", name: "Maya Ortiz" },
+]);
+assert.equal(mayaGame.teamA[0]?.name, "Maya Ortiz");
+assert.equal(mayaGame.teamA[0]?.matchedAs, "MAYA");
+assert.equal(mayaGame.teamA[0]?.playerId, "maya");
+assert.deepEqual(mayaGame.teamA[0]?.suggestions, []);
+
+const rawTokenOnly = normalizeVisionCards({
+  games: [
+    {
+      referees: [{ name: null, written: "QUINN", suggestions: ["QUINN"] }],
+      team1: {
+        players: [
+          { name: null, written: "QUINN", suggestions: ["QUINN"], goals: 1, penalties: 0 },
+        ],
+        score: 1,
+      },
+      team2: { players: [], score: null },
+    },
+  ],
+});
+const expandedQuinn = annotateRefSheet("top-left", rawTokenOnly[0]!.sheet, quinnRoster);
+assert.deepEqual(
+  expandedQuinn.teamA[0]?.suggestions.map((player) => player.name),
+  ["Nova Quinn", "Quinn Adler"],
+);
+assert.equal(
+  expandedQuinn.teamA[0]?.suggestions.some((player) => player.name === "QUINN"),
+  false,
+);
+assert.deepEqual(
+  expandedQuinn.referees[0]?.suggestions.map((player) => player.name),
+  ["Nova Quinn", "Quinn Adler"],
+);
+const withExactQuinn = annotateRefSheet("top-left", rawTokenOnly[0]!.sheet, [
+  { id: "quinn", name: "Quinn" },
+  ...quinnRoster,
+]);
+assert.equal(withExactQuinn.teamA[0]?.name, null);
+assert.equal(withExactQuinn.teamA[0]?.playerId, null);
+assert.equal(withExactQuinn.teamA[0]?.matchedAs, null);
+assert.deepEqual(
+  withExactQuinn.teamA[0]?.suggestions.map((player) => player.name),
+  ["Nova Quinn", "Quinn Adler"],
+);
 
 assert.equal(imageTypeForUpload({ type: "image/heic", name: "sheet.HEIC" }), "image/heic");
 assert.equal(imageTypeForUpload({ type: "image/heif", name: "sheet.heif" }), "image/heif");

@@ -1,4 +1,5 @@
 import { connection } from "next/server";
+import { prisma } from "@/lib/prisma";
 import { readSingleRefSheet } from "@/lib/read-ref-sheet";
 import { RefSheetImageError, refSheetFileToJpeg } from "@/lib/ref-sheet-image";
 import { validateRefSheetFile } from "@/lib/ref-sheet-storage";
@@ -16,8 +17,12 @@ export async function POST(request: Request) {
 
   try {
     const jpeg = await refSheetFileToJpeg(upload.file);
+    const players = await prisma.player.findMany({
+      select: { id: true, name: true, isRookie: true },
+      orderBy: { name: "asc" },
+    });
 
-    return Response.json(await readSingleRefSheet(jpeg));
+    return Response.json(await readSingleRefSheet(jpeg, players));
   } catch (error) {
     if (error instanceof RefSheetImageError) {
       return Response.json({ error: error.message }, { status: 400 });

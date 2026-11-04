@@ -1,3 +1,6 @@
+import { createAnthropic } from "@ai-sdk/anthropic";
+import { generateText, Output } from "ai";
+import { z } from "zod";
 import type { RefSheetCrop } from "@/lib/ref-sheet-image";
 import { normalizeName } from "@/lib/player-match";
 import { SHEET_REGIONS, type SheetRegion } from "@/lib/ref-sheet-layout";
@@ -13,44 +16,89 @@ import {
   type SheetPlayerLine,
 } from "@/lib/ref-sheet-ocr";
 
-export const VISION_IMAGE_DETAIL = "high" as const;
-
-const VISION_MODEL = "gpt-4o";
+const VISION_MODEL = "claude-sonnet-5-5";
 const PLAYERS_KEPT = 3;
 const MAX_PENALTY_MARKS = 4;
 
-export const VISION_SYSTEM_PROMPT = `You are an expert data extraction engine for Winter Bike Polo handwritten paper score sheets. 
+export const VISION_SYSTEM_PROMPT = `You are an expert data extraction engine and assistant for Winter Bike Polo handwritten paper score sheets.
 
-To prevent reading template headers as player names, follow this strict parsing methodology for every card:
+Your job is to extract game data with maximum precision while gracefully handling partially filled sheets and matching player names against the provided active player roster.
 
-1. **TEAM SCORE**: Look only at the square box on the far right labeled 'SCORE'. Read the single handwritten digit inside it (e.g., '2'). Never calculate scores from goals.
-2. **PLAYERS (CRITICAL)**: 
-   - Each card has rows for players. 
-   - The first column is 'CAPT' (checkboxes). 
-   - The second column is 'NAME/NUMBER' where human handwriting is located.
-   - **EXCLUDE ALL PRINTED TEXT**: Ignore any words like 'TEAM NAME:', 'PENALTIES', 'GOALS', 'MATCH NO.', 'CAPT', 'SCORE', '30s', '1m', 'EXP'. If an extracted name matches any of these static strings, discard it immediately. Only accept actual human names (e.g., 'ALEX', 'HAYA', 'NOVA', 'KUBAS').
-3. **GOALS**: Count the filled/shaded circles in the 9-circle row for that player.
-4. **PENALTIES**: Count filled square boxes and checked 30s/1m/EXP marks, returning a single total integer.
+RULES:
+1. HANDLE PARTIAL / EMPTY CARDS: 
+   - The score sheet has a 2x2 grid (4 cards total). If some cards are blank (e.g., right-side column), do NOT fail or throw an error. Simply skip empty cards or return them with empty/null structures in the JSON array.
+2. ALLOW MISSING FIELDS: 
+   - If 'TEAM NAME' or 'REF' is blank on an active card, do NOT reject the sheet. Return null or "" for those specific missing strings.
+3. PLAYER NAME MATCHING & ROSTER RESOLUTION:
+   - Match and normalize every handwritten player name against the provided known player roster/dictionary.
+   - If a handwritten name has minor spelling variations, typos, or shorthand (e.g., "Aleks", "Alex.", "Kuba"), correct it to match the exact canonical name from the known roster.
+   - If a handwritten name is partial or matches multiple players (e.g., just "QUINN" when the roster contains both "Nova Quinn" and "Quinn Adler"), set name to null, or to one best-guess canonical name only when a single roster player is clearly more likely. When name is null, put the handwriting in written (for example "QUINN").
+   - If the written name matches multiple full roster names (e.g. sharing a first or last name like Quinn), map them into the suggestions array using the FULL names from the roster, never repeating the raw ambiguous token alone. Do NOT return suggestions: ["QUINN"], even if a roster entry is exactly "Quinn" and the sheet already says "QUINN". Return the other full roster entries, for example suggestions: ["Nova Quinn", "Quinn Adler"], and leave name null.
+   - If a name is completely clear and unique, set name to that exact canonical roster name, leave suggestions empty or omit it, and set matchedAs to the raw text read from the sheet. Example: the sheet says "MAYA" and the roster has "Maya Ortiz", so name is "Maya Ortiz", suggestions is [], and matchedAs is "MAYA".
+   - If the name is ambiguous and split into suggestions, set name to null and matchedAs to null.
+   - Every parsed player object includes name, suggestions, and matchedAs.
+   - Do NOT invent or hallucinate new players who are not on the roster unless it's completely legible and undeniable.
+4. EXTRACT LEGIBLE DATA:
+   - For active cards, extract every clearly written player name, goal count (count filled/shaded circles in the 9-circle row), score (from the square box on the far right), and penalty mark.
+5. STRICT NO-HALLUCINATION:
+   - Exclude printed template text like 'SCORE', 'CAPT', 'MATCH NO.', 'PENALTIES', 'GOALS', 'REF', 'ASST'. Only accept actual human handwriting.
+6. CROSSED-OUT MARKS:
+   - Ignore any goal, penalty, or name that has been explicitly crossed out with an 'X' or scribbled over.
+7. FALLBACK SAFETY:
+   - Only throw an error like "Could not read this ref sheet" if the entire image is completely black, corrupted, unreadable, or not a match sheet at all.
+8. JSON OUTPUT:
+   - Always return a strictly valid JSON response matching our required schema for all 4 slots/games.`;
 
-Example of a valid player row:
-Handwritten text under NAME/NUMBER: 'ALEX' -> Keep.
-Printed text under NAME/NUMBER: 'TEAM NAME:' -> Discard/Ignore.
+const suggestionSchema = z.array(z.string().nullish()).nullish();
 
-Return strictly valid JSON matching the required schema inside \`response_format: { type: "json_object" }\`.`;
+const playerSchema = z.object({
+  name: z.string().nullish(),
+  written: z.string().nullish(),
+  matchedAs: z.string().nullish(),
+  suggestions: suggestionSchema,
+  goals: z.number().nullish(),
+  penalties: z.number().nullish(),
+});
+
+const refereeSchema = z.union([
+  z.string(),
+  z.object({
+    name: z.string().nullish(),
+    written: z.string().nullish(),
+    matchedAs: z.string().nullish(),
+    suggestions: suggestionSchema,
+  }),
+]);
+
+const teamSchema = z.object({
+  players: z.array(playerSchema).nullish(),
+  score: z.number().nullish(),
+});
+
+const gameSchema = z.object({
+  referees: z.array(refereeSchema.nullish()).nullish(),
+  team1: teamSchema.nullish(),
+  team2: teamSchema.nullish(),
+});
+
+const gamesSchema = z.object({
+  games: z.array(gameSchema.nullable()),
+});
 
 const JSON_SHAPE = `{
   "games": [
     {
-      "referees": ["Name1", "Name2"],
+      "referees": [{ "name": "Anna Lee", "suggestions": [] }],
       "team1": {
         "players": [
-          { "name": "ALEX", "goals": 0, "penalties": 0 }
+          { "name": "Maya Ortiz", "suggestions": [], "matchedAs": "MAYA", "goals": 2, "penalties": 0 },
+          { "name": null, "written": "QUINN", "suggestions": ["Nova Quinn", "Quinn Adler"], "matchedAs": null, "goals": 1, "penalties": 0 }
         ],
         "score": 2
       },
       "team2": {
         "players": [
-          { "name": "HAYA", "goals": 0, "penalties": 0 }
+          { "name": "Alex Example", "suggestions": [], "matchedAs": "ALEX", "goals": 0, "penalties": 0 }
         ],
         "score": 2
       }
@@ -67,62 +115,81 @@ const REGION_LABEL: Record<SheetRegion, string> = {
 
 type VisionContent = [
   { type: "text"; text: string },
-  {
-    type: "image_url";
-    image_url: { url: string; detail: typeof VISION_IMAGE_DETAIL };
-  },
+  { type: "image"; image: Buffer; mediaType: "image/jpeg" },
 ];
 
 export interface VisionRequestBody {
   model: string;
   temperature: number;
-  max_tokens: number;
-  response_format: { type: "json_object" };
-  messages: [{ role: "system"; content: string }, { role: "user"; content: VisionContent }];
+  maxOutputTokens: number;
+  system: string;
+  messages: [{ role: "user"; content: VisionContent }];
 }
 
 export function visionConfigured(): boolean {
-  return Boolean(process.env.OPENAI_API_KEY?.trim());
+  return Boolean(process.env.ANTHROPIC_API_KEY?.trim());
+}
+
+function rosterBlock(names: readonly string[]): string {
+  const seen = new Set<string>();
+  const roster: string[] = [];
+
+  for (const name of names) {
+    const cleaned = name.replace(/\s+/g, " ").trim();
+    const key = normalizeName(cleaned);
+
+    if (!cleaned || !key || seen.has(key)) {
+      continue;
+    }
+
+    seen.add(key);
+    roster.push(cleaned);
+  }
+
+  roster.sort((left, right) => left.localeCompare(right));
+
+  if (roster.length === 0) {
+    return "Active player roster: none provided. Extract a completely legible handwritten name as written. Do not invent players.";
+  }
+
+  return `Active player roster. Correct minor spelling variations, typos, and shorthand to these exact canonical names. If a written name is partial or matches a first or last name shared by more than one player, suggestions must be the FULL roster names that contain that text. Never return the raw token alone, such as suggestions: ["QUINN"]:\n${roster.join("\n")}`;
 }
 
 function visionBody(
   jpeg: Buffer,
   model: string,
-  system: string,
   instruction: string,
-  maxTokens: number,
+  maxOutputTokens: number,
+  roster: readonly string[] = [],
 ): VisionRequestBody {
   return {
     model,
     temperature: 0,
-    max_tokens: maxTokens,
-    response_format: { type: "json_object" },
+    maxOutputTokens,
+    system: VISION_SYSTEM_PROMPT,
     messages: [
-      { role: "system", content: system },
       {
         role: "user",
         content: [
-          { type: "text", text: instruction },
-          {
-            type: "image_url",
-            image_url: {
-              url: `data:image/jpeg;base64,${jpeg.toString("base64")}`,
-              detail: VISION_IMAGE_DETAIL,
-            },
-          },
+          { type: "text", text: `${instruction}\n${rosterBlock(roster)}` },
+          { type: "image", image: jpeg, mediaType: "image/jpeg" },
         ],
       },
     ],
   };
 }
 
-export function buildVisionRequest(jpeg: Buffer, model = VISION_MODEL): VisionRequestBody {
+export function buildVisionRequest(
+  jpeg: Buffer,
+  model = VISION_MODEL,
+  roster: readonly string[] = [],
+): VisionRequestBody {
   return visionBody(
     jpeg,
     model,
-    VISION_SYSTEM_PROMPT,
-    `Use this schema. Scan filled cards Top-Left, Bottom-Left, Top-Right, Bottom-Right. Ignore blank cards. An empty SCORE box is null.\n${JSON_SHAPE}`,
+    `Use this schema. Return exactly 4 games in this order: Top-Left, Bottom-Left, Top-Right, Bottom-Right. Keep a blank card in its slot with empty players, empty referees, and null scores. A missing TEAM NAME or REF is null. An empty SCORE box is null.\n${JSON_SHAPE}`,
     2500,
+    roster,
   );
 }
 
@@ -130,13 +197,14 @@ function buildCardVisionRequest(
   jpeg: Buffer,
   region: SheetRegion,
   model: string,
+  roster: readonly string[] = [],
 ): VisionRequestBody {
   return visionBody(
     jpeg,
     model,
-    VISION_SYSTEM_PROMPT,
-    `This image is the ${REGION_LABEL[region]} card only. Return at most one game with this schema. If the card is blank, return {"games":[]}. An empty SCORE box is null.\n${JSON_SHAPE}`,
+    `This image is the ${REGION_LABEL[region]} card only. Return exactly one game with this schema. If the card is blank, return one game with empty players, empty referees, and null scores. A missing TEAM NAME or REF is null. An empty SCORE box is null.\n${JSON_SHAPE}`,
     1200,
+    roster,
   );
 }
 
@@ -175,6 +243,61 @@ function refereeName(value: unknown): string | null {
 
 function playerName(value: unknown): string | null {
   return typeof value === "string" ? readableSheetName(value) : null;
+}
+
+function suggestionList(value: unknown): string[] {
+  if (!Array.isArray(value)) {
+    return [];
+  }
+
+  const names: string[] = [];
+
+  for (const entry of value) {
+    const name = playerName(entry);
+
+    if (!name || names.some((existing) => normalizeName(existing) === normalizeName(name))) {
+      continue;
+    }
+
+    names.push(name);
+
+    if (names.length === 4) {
+      break;
+    }
+  }
+
+  return names;
+}
+
+interface NamedReading {
+  name: string;
+  suggestions: string[];
+}
+
+function namedReading(value: unknown): NamedReading | null {
+  if (typeof value === "string" || value === null || value === undefined) {
+    const name = refereeName(value);
+
+    return name ? { name, suggestions: [] } : null;
+  }
+
+  if (typeof value !== "object") {
+    return null;
+  }
+
+  const row = value as Record<string, unknown>;
+  const suggestions = suggestionList(row.suggestions);
+  const name =
+    refereeName(row.written) ??
+    refereeName(row.matchedAs) ??
+    refereeName(row.name) ??
+    suggestions[0];
+
+  if (!name) {
+    return null;
+  }
+
+  return { name, suggestions };
 }
 
 function scoreValue(value: unknown): number | null {
@@ -230,7 +353,12 @@ function playerLine(value: unknown): SheetPlayerLine | null {
   }
 
   const row = value as Record<string, unknown>;
-  const name = playerName(row.name);
+  const suggestions = suggestionList(row.suggestions);
+  const name =
+    playerName(row.written) ??
+    playerName(row.matchedAs) ??
+    playerName(row.name) ??
+    suggestions[0];
 
   if (!name) {
     return null;
@@ -240,34 +368,35 @@ function playerLine(value: unknown): SheetPlayerLine | null {
 
   return {
     name,
+    suggestions,
     goals: clampInt(row.goals, MAX_GOAL_CIRCLES),
     penalties: penalties.penalties,
     fouls: penalties.fouls,
   };
 }
 
-function uniqueNames(value: unknown): string[] {
+function uniquePeople(value: unknown): NamedReading[] {
   if (!Array.isArray(value)) {
     return [];
   }
 
-  const names: string[] = [];
+  const people: NamedReading[] = [];
 
   for (const entry of value) {
-    const name = refereeName(entry);
+    const person = namedReading(entry);
 
-    if (!name || names.some((existing) => normalizeName(existing) === normalizeName(name))) {
+    if (!person || people.some((existing) => normalizeName(existing.name) === normalizeName(person.name))) {
       continue;
     }
 
-    names.push(name);
+    people.push(person);
 
-    if (names.length === 2) {
+    if (people.length === 2) {
       break;
     }
   }
 
-  return names;
+  return people;
 }
 
 function teamLines(value: unknown): SheetPlayerLine[] {
@@ -372,8 +501,10 @@ export function normalizeVisionCards(
 
     const teamA = readTeam(row.team1 ?? row.teamA);
     const teamB = readTeam(row.team2 ?? row.teamB);
+    const referees = uniquePeople(row.referees);
     const sheet: ParsedRefSheet = {
-      referees: uniqueNames(row.referees),
+      referees: referees.map((person) => person.name),
+      refereeSuggestions: referees.map((person) => person.suggestions),
       teamA: teamLines(teamA.players),
       teamB: teamLines(teamB.players),
       scoreTeamA: scoreValue(row.scoreTeamA !== undefined ? row.scoreTeamA : teamA.score),
@@ -400,25 +531,6 @@ export function normalizeVisionCards(
   return located;
 }
 
-function visionMessageContent(body: unknown): string {
-  if (!body || typeof body !== "object" || !("choices" in body)) {
-    throw new Error("Vision response was empty.");
-  }
-
-  const choices = (body as { choices?: unknown }).choices;
-  const first = Array.isArray(choices) ? choices[0] : null;
-  const content =
-    first && typeof first === "object" && first !== null && "message" in first
-      ? (first as { message?: { content?: unknown } }).message?.content
-      : null;
-
-  if (typeof content !== "string" || !content.trim()) {
-    throw new Error("Vision response was empty.");
-  }
-
-  return content;
-}
-
 export function parseVisionPayload(content: string): unknown {
   const trimmed = content.trim().replace(/^```(?:json)?\s*|\s*```$/g, "");
 
@@ -436,38 +548,48 @@ export function parseVisionPayload(content: string): unknown {
   }
 }
 
-async function postVision(body: VisionRequestBody, timeoutMs: number): Promise<unknown> {
-  const apiKey = process.env.OPENAI_API_KEY?.trim();
+function anthropicModel(model: string) {
+  const apiKey = process.env.ANTHROPIC_API_KEY?.trim();
 
   if (!apiKey) {
-    throw new Error("OPENAI_API_KEY is not set.");
+    throw new Error("ANTHROPIC_API_KEY is not set.");
   }
 
-  const response = await fetch("https://api.openai.com/v1/chat/completions", {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify(body),
-    signal: AbortSignal.timeout(timeoutMs),
+  return createAnthropic({ apiKey })(model);
+}
+
+async function postVision(body: VisionRequestBody, timeoutMs: number): Promise<unknown> {
+  const result = await generateText({
+    model: anthropicModel(body.model),
+    system: body.system,
+    temperature: body.temperature,
+    maxOutputTokens: body.maxOutputTokens,
+    maxRetries: 0,
+    abortSignal: AbortSignal.timeout(timeoutMs),
+    messages: body.messages,
+    output: Output.object({
+      schema: gamesSchema,
+      name: "ref_sheet_games",
+      description:
+        "Four winter bike polo match-card slots. Each player has name and suggestions. Blank cards, missing TEAM NAME or REF fields, and ambiguous names are null or empty. Empty SCORE boxes are null.",
+    }),
   });
 
-  if (!response.ok) {
-    throw new Error(`Vision request failed (${response.status}).`);
-  }
-
-  return parseVisionPayload(visionMessageContent(await response.json()));
+  return result.output;
 }
 
 async function readCroppedCards(
   crops: RefSheetCrop[],
   model: string,
+  roster: readonly string[],
 ): Promise<{ ok: boolean; cards: LocatedRefSheet[] }> {
   const reads = await Promise.all(
     crops.map(async (crop) => {
       try {
-        const payload = await postVision(buildCardVisionRequest(crop.jpeg, crop.region, model), 30_000);
+        const payload = await postVision(
+          buildCardVisionRequest(crop.jpeg, crop.region, model, roster),
+          30_000,
+        );
 
         return { ok: true as const, card: normalizeVisionCards(payload, crop.region)[0] ?? null };
       } catch (error) {
@@ -488,8 +610,11 @@ async function readCroppedCards(
   };
 }
 
-export async function readRefSheetWithVision(jpeg: Buffer): Promise<LocatedRefSheet[]> {
-  const model = process.env.OPENAI_VISION_MODEL?.trim() || VISION_MODEL;
+export async function readRefSheetWithVision(
+  jpeg: Buffer,
+  roster: readonly string[] = [],
+): Promise<LocatedRefSheet[]> {
+  const model = VISION_MODEL;
   const { cropRefSheetQuadrants } = await import("@/lib/ref-sheet-image");
   const crops = await cropRefSheetQuadrants(jpeg).catch((error: unknown) => {
     console.error(error);
@@ -498,14 +623,14 @@ export async function readRefSheetWithVision(jpeg: Buffer): Promise<LocatedRefSh
   });
 
   if (crops && crops.length === 4) {
-    const cropped = await readCroppedCards(crops, model);
+    const cropped = await readCroppedCards(crops, model, roster);
 
     if (cropped.ok) {
       return cropped.cards;
     }
   }
 
-  const payload = await postVision(buildVisionRequest(jpeg, model), 45_000);
+  const payload = await postVision(buildVisionRequest(jpeg, model, roster), 45_000);
 
   return normalizeVisionCards(payload);
 }

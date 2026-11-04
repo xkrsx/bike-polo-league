@@ -2,18 +2,34 @@ import { connection } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { readMatchedRefSheets } from "@/lib/read-ref-sheet";
 import { RefSheetImageError, refSheetFileToJpeg } from "@/lib/ref-sheet-image";
-import type { MatchedRefGame } from "@/lib/ref-sheet-match";
+import type { MatchedRefGame, SheetNameMatch } from "@/lib/ref-sheet-match";
 import { isPlausiblePlayerName } from "@/lib/ref-sheet-ocr";
 import { validateRefSheetFile } from "@/lib/ref-sheet-storage";
+
+function presentPerson<T extends SheetNameMatch>(person: T): T {
+  const resolved = person.confidence === "high" && person.playerId ? person.name ?? person.playerName : null;
+
+  return {
+    ...person,
+    name: resolved,
+    matchedAs: resolved ? person.matchedAs ?? person.rawName : null,
+  };
+}
 
 function presentGames(games: MatchedRefGame[]): MatchedRefGame[] {
   return games
     .map((game) => ({
       ...game,
       notes: game.notes.filter((note) => !/was left off/i.test(note)),
-      referees: game.referees.filter((person) => isPlausiblePlayerName(person.rawName)),
-      teamA: game.teamA.filter((person) => isPlausiblePlayerName(person.rawName)),
-      teamB: game.teamB.filter((person) => isPlausiblePlayerName(person.rawName)),
+      referees: game.referees
+        .filter((person) => isPlausiblePlayerName(person.rawName))
+        .map((person) => presentPerson(person)),
+      teamA: game.teamA
+        .filter((person) => isPlausiblePlayerName(person.rawName))
+        .map((person) => presentPerson(person)),
+      teamB: game.teamB
+        .filter((person) => isPlausiblePlayerName(person.rawName))
+        .map((person) => presentPerson(person)),
     }))
     .filter(
       (game) =>

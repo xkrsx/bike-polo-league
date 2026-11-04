@@ -33,10 +33,12 @@ export interface SheetPlayerLine {
   goals: number;
   penalties: SheetPenalties;
   fouls: number;
+  suggestions?: string[];
 }
 
 export interface ParsedRefSheet {
   referees: string[];
+  refereeSuggestions?: string[][];
   teamA: SheetPlayerLine[];
   teamB: SheetPlayerLine[];
   scoreTeamA: number | null;
@@ -526,6 +528,10 @@ export function isPlausiblePlayerName(name: string): boolean {
   }
 
   if (tokens.every((token) => LABEL_TOKEN.test(token))) {
+    return false;
+  }
+
+  if (tokens.some((token) => /^x+$/i.test(token))) {
     return false;
   }
 
