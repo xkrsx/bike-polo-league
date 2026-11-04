@@ -3,7 +3,13 @@ import Link from "next/link";
 import type { Metadata } from "next";
 import { connection } from "next/server";
 import { TeamAssigned, type Prisma } from "@prisma/client";
+import { moderateGame } from "@/app/actions/game";
 import { LineupColumns, type LineupPlayer } from "@/app/games/lineup-columns";
+import {
+  GAME_APPROVED,
+  GAME_REJECTED,
+  gameStatusLabel,
+} from "@/lib/game-status";
 import { prisma } from "@/lib/prisma";
 import { teamA, teamB } from "@/lib/team-colors";
 
@@ -31,8 +37,8 @@ export default function GamesPage() {
             Games
           </h1>
           <p className="max-w-2xl text-sm leading-6 text-zinc-600 dark:text-zinc-400">
-            Every recorded game. Open one to correct the date, referee, or
-            player stats.
+            Every recorded game. Pending and rejected games stay off the
+            leaderboard until you approve them.
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap gap-2">
@@ -43,10 +49,16 @@ export default function GamesPage() {
             Leaderboard
           </Link>
           <Link
+            href="/admin/league"
+            className="inline-flex h-10 items-center justify-center rounded-full border border-zinc-300 px-4 text-sm font-medium text-zinc-900 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-100 dark:hover:bg-zinc-900"
+          >
+            Reset
+          </Link>
+          <Link
             href="/games/new"
             className="inline-flex h-10 items-center justify-center rounded-full bg-zinc-950 px-4 text-sm font-medium text-white transition-colors hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-950 dark:hover:bg-zinc-200"
           >
-            Enter game
+            Submit games
           </Link>
         </div>
       </header>
@@ -60,6 +72,9 @@ export default function GamesPage() {
 const gameListSelect = {
   id: true,
   date: true,
+  status: true,
+  submittedBy: true,
+  refSheetImageUrl: true,
   scoreTeamA: true,
   scoreTeamB: true,
   players: {
@@ -103,18 +118,33 @@ async function GamesList() {
       <p className="rounded-2xl border border-dashed border-zinc-300 px-6 py-12 text-center text-zinc-500 dark:border-zinc-700">
         No games yet.{" "}
         <Link href="/games/new" className="font-medium text-zinc-950 dark:text-zinc-50">
-          Enter the first one
+          Submit the first sheet
         </Link>
         .
       </p>
     );
   }
 
+  const pendingCount = games.filter((game) => game.status === "PENDING").length;
+
   return (
-    <ul className="flex flex-col gap-3">
+    <div className="flex flex-col gap-3">
+      {pendingCount > 0 ? (
+        <p className="rounded-2xl border border-amber-200 bg-amber-50 px-4 py-3 text-sm text-amber-950 dark:border-amber-900 dark:bg-amber-950/40 dark:text-amber-100">
+          {pendingCount === 1 ? "1 game is" : `${pendingCount} games are`} waiting for approval.
+          Approved games are the ones on the leaderboard.
+        </p>
+      ) : null}
+      <ul className="flex flex-col gap-3">
       {games.map((game) => {
         const dateLabel = gameDateFormat.format(game.date);
         const scoreLabel = `${game.scoreTeamA} to ${game.scoreTeamB}`;
+        const statusClass =
+          game.status === GAME_APPROVED
+            ? "bg-emerald-100 text-emerald-950 dark:bg-emerald-400/15 dark:text-emerald-100"
+            : game.status === GAME_REJECTED
+              ? "bg-rose-100 text-rose-950 dark:bg-rose-400/15 dark:text-rose-100"
+              : "bg-amber-100 text-amber-950 dark:bg-amber-400/15 dark:text-amber-100";
 
         return (
           <li
@@ -154,6 +184,46 @@ async function GamesList() {
                 </Link>
               </div>
             </div>
+            <div className="mt-3 flex flex-wrap items-center gap-2">
+              <span className={`rounded-full px-2.5 py-1 text-xs font-medium ${statusClass}`}>
+                {gameStatusLabel(game.status)}
+              </span>
+              {game.submittedBy ? (
+                <span className="text-sm text-zinc-500">Submitted by {game.submittedBy}</span>
+              ) : null}
+              {game.refSheetImageUrl ? (
+                <a
+                  href={game.refSheetImageUrl}
+                  className="text-sm font-medium text-zinc-950 underline decoration-zinc-300 underline-offset-4 dark:text-zinc-50"
+                >
+                  Ref sheet
+                </a>
+              ) : null}
+              {game.status !== GAME_APPROVED ? (
+                <form action={moderateGame}>
+                  <input type="hidden" name="id" value={game.id} />
+                  <input type="hidden" name="status" value={GAME_APPROVED} />
+                  <button
+                    type="submit"
+                    className="inline-flex h-8 items-center rounded-full bg-zinc-950 px-3 text-xs font-medium text-white dark:bg-zinc-50 dark:text-zinc-950"
+                  >
+                    Approve
+                  </button>
+                </form>
+              ) : null}
+              {game.status !== GAME_REJECTED ? (
+                <form action={moderateGame}>
+                  <input type="hidden" name="id" value={game.id} />
+                  <input type="hidden" name="status" value={GAME_REJECTED} />
+                  <button
+                    type="submit"
+                    className="inline-flex h-8 items-center rounded-full border border-zinc-300 px-3 text-xs font-medium text-zinc-800 dark:border-zinc-700 dark:text-zinc-100"
+                  >
+                    Reject
+                  </button>
+                </form>
+              ) : null}
+            </div>
             <div className="mt-4">
               <LineupColumns
                 left={sidePlayers(game, TeamAssigned.TEAM_A)}
@@ -163,7 +233,8 @@ async function GamesList() {
           </li>
         );
       })}
-    </ul>
+      </ul>
+    </div>
   );
 }
 

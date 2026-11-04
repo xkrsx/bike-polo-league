@@ -29,20 +29,26 @@ model Player {
   customBonusValue  Int          @default(0)
   createdAt         DateTime     @default(now())
   refereedGames     Game[]         @relation("GameReferee")
+  assistedGames     Game[]         @relation("GameAssistant")
   gameStats         GamePlayer[]
   finalsRoster      FinalsRoster[]
   playoffLines      PlayoffLine[]
 }
 
 model Game {
-  id           String       @id @default(cuid())
-  date         DateTime     @default(now()) // Data rozegrania meczu (kolejka)
-  scoreTeamA   Int
-  scoreTeamB   Int
-  refereeId    String?
-  referee      Player?      @relation("GameReferee", fields: [refereeId], references: [id], onDelete: Restrict)
-  createdAt    DateTime     @default(now())
-  players      GamePlayer[]
+  id               String       @id @default(cuid())
+  date             DateTime     @default(now()) // Data rozegrania meczu (kolejka)
+  scoreTeamA       Int
+  scoreTeamB       Int
+  status           String       @default("PENDING") // PENDING | APPROVED | REJECTED
+  refSheetImageUrl String?
+  submittedBy      String       @default("")
+  refereeId        String?
+  referee          Player?      @relation("GameReferee", fields: [refereeId], references: [id], onDelete: Restrict)
+  assistantId      String?
+  assistant        Player?      @relation("GameAssistant", fields: [assistantId], references: [id], onDelete: Restrict)
+  createdAt        DateTime     @default(now())
+  players          GamePlayer[]
 }
 
 model GamePlayer {

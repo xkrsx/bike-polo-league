@@ -20,8 +20,8 @@ export const AWARD_COPY = [
   {
     id: "hardest-snowflake",
     title: "The hardest snowflake",
-    criterion: "Most dedicated ref",
-    method: "Most league games refereed.",
+    criterion: "Most dedicated ref / assistant",
+    method: "Most league games as referee or assistant.",
   },
   {
     id: "blizzard",
@@ -197,7 +197,7 @@ function winnersFor(
       return named(
         maxPositive(players, (player) => player.gamesRefereed),
         (player) => countLabel(player.gamesRefereed, "game", "games"),
-        "No games refereed.",
+        "No games as ref or assistant.",
       );
     case "blizzard":
       return named(

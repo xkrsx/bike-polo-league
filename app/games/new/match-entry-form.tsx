@@ -1,10 +1,16 @@
 "use client";
 
-import { useActionState, useEffect, useId, useState } from "react";
+import { useActionState, useEffect, useId, useRef, useState } from "react";
 import Link from "next/link";
 import { createGame, type GameActionState } from "@/app/actions/game";
 import { LineupColumns, type LineupPlayer } from "@/app/games/lineup-columns";
 import { tallyMatchScore, type MatchLine } from "@/lib/match-sheet";
+import {
+  penaltySummary,
+  REF_SHEET_SKIPPED_FIELDS,
+  type ParsedRefSheet,
+  type SheetPlayerLine,
+} from "@/lib/ref-sheet-ocr";
 import { teamA as teamATone, teamB as teamBTone } from "@/lib/team-colors";
 import {
   normalizeName,
@@ -41,6 +47,10 @@ interface MatchEntryFormProps {
   pendingLabel?: string;
   idleMessage?: string;
   cancelHref?: string;
+  requireSubmitter?: boolean;
+  existingImageUrl?: string | null;
+  submittedBy?: string;
+  statusLabel?: string;
 }
 
 interface LineRow {
@@ -49,6 +59,7 @@ interface LineRow {
   goals: string;
   ownGoals: string;
   fouls: string;
+  penaltyHint: string;
 }
 
 const initialState: GameActionState = { error: null };
@@ -66,6 +77,22 @@ function lineRows(prefix: string, lines: MatchEntryLine[] | undefined): LineRow[
       goals: line ? String(line.goals) : "",
       ownGoals: line ? String(line.ownGoals) : "",
       fouls: line ? String(line.fouls) : "",
+      penaltyHint: "",
+    };
+  });
+}
+
+function rowsFromSheet(prefix: string, lines: SheetPlayerLine[]): LineRow[] {
+  return [0, 1, 2].map((index) => {
+    const line = lines[index];
+
+    return {
+      key: `${prefix}-${index}`,
+      name: line?.name ?? "",
+      goals: line ? String(line.goals) : "",
+      ownGoals: "",
+      fouls: line ? String(line.fouls) : "",
+      penaltyHint: line ? penaltySummary(line.penalties) : "",
     };
   });
 }
@@ -334,6 +361,11 @@ function TeamLines({
                 onChange={(fouls) => patch(line.key, { fouls })}
               />
             </div>
+            {line.penaltyHint ? (
+              <p className="text-xs text-zinc-500">
+                Sheet penalties: {line.penaltyHint}. Each 30s, 1m, or EXP counts as one foul.
+              </p>
+            ) : null}
           </div>
         ))}
       </div>
@@ -390,13 +422,19 @@ function Scoreboard({
   teamB,
   players,
   rookies,
+  sheetScore,
 }: {
   teamA: LineRow[];
   teamB: LineRow[];
   players: PlayerCandidate[];
   rookies: Readonly<Record<string, boolean>>;
+  sheetScore: { teamA: number | null; teamB: number | null } | null;
 }) {
   const score = tallyMatchScore(teamA.map(toMatchLine), teamB.map(toMatchLine));
+  const sheetDiffers =
+    sheetScore !== null &&
+    ((sheetScore.teamA !== null && sheetScore.teamA !== score.scoreTeamA) ||
+      (sheetScore.teamB !== null && sheetScore.teamB !== score.scoreTeamB));
 
   return (
     <section
@@ -411,6 +449,14 @@ function Scoreboard({
         </p>
         <p className={`${scoreFigure} ${teamBTone.onDark}`}>{score.scoreTeamB}</p>
       </div>
+      {sheetScore && (sheetScore.teamA !== null || sheetScore.teamB !== null) ? (
+        <p className="text-center text-xs leading-5 text-zinc-300">
+          Score box {sheetScore.teamA ?? "–"} : {sheetScore.teamB ?? "–"}
+          {sheetDiffers
+            ? ". Counted goals differ. Add own goals if the other side scored them."
+            : ""}
+        </p>
+      ) : null}
       <LineupColumns
         onDark
         left={namedPlayers(teamA, players, rookies)}
@@ -420,11 +466,68 @@ function Scoreboard({
   );
 }
 
-function PaperSheetUpload() {
+function SheetSideReadout({
+  label,
+  lines,
+  score,
+}: {
+  label: string;
+  lines: SheetPlayerLine[];
+  score: number | null;
+}) {
+  return (
+    <div className="flex flex-col gap-1">
+      <p className="font-medium text-zinc-950 dark:text-zinc-50">
+        {label}
+        {score !== null ? <span className="ml-2 tabular-nums text-zinc-500">{score}</span> : null}
+      </p>
+      {lines.length === 0 ? (
+        <p className="text-zinc-500">No players read</p>
+      ) : (
+        <ul className="flex flex-col gap-1 text-zinc-700 dark:text-zinc-300">
+          {lines.map((line) => {
+            const penalties = penaltySummary(line.penalties);
+
+            return (
+              <li key={`${line.name}-${line.goals}-${penalties}`}>
+                {line.name}
+                <span className="text-zinc-500">
+                  {" "}
+                  · {line.goals} {line.goals === 1 ? "goal" : "goals"}
+                  {penalties ? ` · ${penalties}` : ""}
+                </span>
+              </li>
+            );
+          })}
+        </ul>
+      )}
+    </div>
+  );
+}
+
+function canPreviewPhoto(file: File): boolean {
+  const type = file.type.toLowerCase();
+
+  return type.startsWith("image/") && !type.includes("heic") && !type.includes("heif");
+}
+
+function RefSheetReview({
+  required,
+  existingImageUrl,
+  onParsed,
+}: {
+  required: boolean;
+  existingImageUrl?: string | null;
+  onParsed: (sheet: ParsedRefSheet) => void;
+}) {
   const inputId = useId();
+  const inputRef = useRef<HTMLInputElement>(null);
+  const requestId = useRef(0);
   const [fileName, setFileName] = useState<string | null>(null);
   const [previewUrl, setPreviewUrl] = useState<string | null>(null);
   const [dragging, setDragging] = useState(false);
+  const [parsed, setParsed] = useState<ParsedRefSheet | null>(null);
+  const [status, setStatus] = useState<string | null>(null);
 
   useEffect(() => {
     return () => {
@@ -434,63 +537,171 @@ function PaperSheetUpload() {
     };
   }, [previewUrl]);
 
-  function selectFile(file: File | null) {
+  async function selectFile(file: File | null, fromDrop: boolean) {
+    if (fromDrop && inputRef.current) {
+      const transfer = new DataTransfer();
+
+      if (file) {
+        transfer.items.add(file);
+      }
+
+      inputRef.current.files = transfer.files;
+    }
+
     setFileName(file?.name ?? null);
-    setPreviewUrl(
-      file && file.type.startsWith("image/") ? URL.createObjectURL(file) : null,
-    );
+    setPreviewUrl((current) => {
+      if (current) {
+        URL.revokeObjectURL(current);
+      }
+
+      return file && canPreviewPhoto(file) ? URL.createObjectURL(file) : null;
+    });
+
+    if (!file) {
+      return;
+    }
+
+    const id = requestId.current + 1;
+    requestId.current = id;
+    setStatus("Reading the ref sheet…");
+    setParsed(null);
+
+    try {
+      const body = new FormData();
+      body.set("refSheet", file);
+      const response = await fetch("/api/ref-sheets/parse", { method: "POST", body });
+      const payload: unknown = await response.json();
+
+      if (id !== requestId.current) {
+        return;
+      }
+
+      if (
+        !response.ok ||
+        !payload ||
+        typeof payload !== "object" ||
+        !("teamA" in payload)
+      ) {
+        const message =
+          payload &&
+          typeof payload === "object" &&
+          "error" in payload &&
+          typeof payload.error === "string"
+            ? payload.error
+            : "Could not read this ref sheet. Enter the game by hand.";
+        setStatus(message);
+        return;
+      }
+
+      const sheet = payload as ParsedRefSheet;
+      setParsed(sheet);
+      setStatus(null);
+      onParsed(sheet);
+    } catch {
+      if (id !== requestId.current) {
+        return;
+      }
+
+      setStatus("Could not read this ref sheet. Enter the game by hand.");
+    }
   }
+
+  const shownUrl = previewUrl ?? existingImageUrl ?? null;
 
   return (
     <section className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
       <div className="flex flex-col gap-1">
         <h2 className="text-sm font-semibold tracking-wide text-zinc-950 uppercase dark:text-zinc-50">
-          Paper match sheet
+          Paper ref sheet
         </h2>
         <p id={`${inputId}-hint`} className="text-sm leading-6 text-zinc-600 dark:text-zinc-400">
-          Add a photo or PDF for reference. It stays in the browser for now, so
-          a later reader can fill this form from the sheet.
+          Upload a photo of the match card. Ref and assistant are read as one
+          list. Match number, team names, and captain marks are skipped. Check
+          the names, goals, penalties, and score box before you submit.
         </p>
+        <a
+          href="/ref-sheet-template.jpg"
+          className="w-fit text-sm font-medium text-zinc-950 underline decoration-zinc-300 underline-offset-4 dark:text-zinc-50"
+        >
+          Blank template
+        </a>
       </div>
-      <label
-        htmlFor={inputId}
-        onDragOver={(event) => {
-          event.preventDefault();
-          setDragging(true);
-        }}
-        onDragLeave={() => setDragging(false)}
-        onDrop={(event) => {
-          event.preventDefault();
-          setDragging(false);
-          selectFile(event.dataTransfer.files[0] ?? null);
-        }}
-        className={`mt-4 flex cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border border-dashed px-4 py-8 text-center transition-colors ${
-          dragging
-            ? "border-zinc-950 bg-zinc-100 dark:border-zinc-100 dark:bg-zinc-900"
-            : "border-zinc-300 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
-        }`}
-      >
-        <span className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
-          {fileName ?? "Upload the paper sheet"}
-        </span>
-        <span className="text-xs text-zinc-500">PNG, JPG, or PDF</span>
-        {previewUrl ? (
-          // The preview is a local object URL chosen by the user, not a remote asset.
-          // eslint-disable-next-line @next/next/no-img-element
-          <img
-            src={previewUrl}
-            alt="Selected match sheet"
-            className="mt-2 max-h-48 rounded-lg object-contain"
-          />
-        ) : null}
-      </label>
+      <div className="mt-4 grid items-start gap-4 lg:grid-cols-2">
+        <div className="flex flex-col gap-3">
+          <label
+            htmlFor={inputId}
+            onDragOver={(event) => {
+              event.preventDefault();
+              setDragging(true);
+            }}
+            onDragLeave={() => setDragging(false)}
+            onDrop={(event) => {
+              event.preventDefault();
+              setDragging(false);
+              void selectFile(event.dataTransfer.files[0] ?? null, true);
+            }}
+            className={`flex cursor-pointer flex-col items-center justify-center gap-3 rounded-xl border border-dashed px-4 py-8 text-center transition-colors ${
+              dragging
+                ? "border-zinc-950 bg-zinc-100 dark:border-zinc-100 dark:bg-zinc-900"
+                : "border-zinc-300 hover:bg-zinc-50 dark:border-zinc-700 dark:hover:bg-zinc-900"
+            }`}
+          >
+            <span className="text-sm font-medium text-zinc-800 dark:text-zinc-200">
+              {fileName ?? (existingImageUrl ? "Replace the ref sheet photo" : "Upload the ref sheet")}
+            </span>
+            <span className="text-xs text-zinc-500">HEIC, PNG, JPG, WEBP, or GIF</span>
+          </label>
+          {shownUrl ? (
+            // Local object URLs and stored sheet photos are chosen at runtime.
+            // eslint-disable-next-line @next/next/no-img-element
+            <img
+              src={shownUrl}
+              alt="Ref sheet photo"
+              className="max-h-80 w-full rounded-lg object-contain"
+            />
+          ) : null}
+        </div>
+        <div className="flex flex-col gap-3 rounded-xl bg-zinc-50 p-4 text-sm dark:bg-zinc-900">
+          <h3 className="text-sm font-semibold tracking-wide text-zinc-950 uppercase dark:text-zinc-50">
+            Read from the sheet
+          </h3>
+          {status ? <p className="text-zinc-600 dark:text-zinc-300">{status}</p> : null}
+          {parsed ? (
+            <>
+              <p className="text-zinc-700 dark:text-zinc-300">
+                <span className="font-medium text-zinc-950 dark:text-zinc-50">Referees: </span>
+                {parsed.referees.length > 0 ? parsed.referees.join(", ") : "None read"}
+              </p>
+              <SheetSideReadout label="Red" lines={parsed.teamA} score={parsed.scoreTeamA} />
+              <SheetSideReadout label="Blue" lines={parsed.teamB} score={parsed.scoreTeamB} />
+              {parsed.notes.map((note, index) => (
+                <p key={`${index}-${note}`} className="text-xs leading-5 text-zinc-500">
+                  {note}
+                </p>
+              ))}
+            </>
+          ) : status ? null : (
+            <p className="text-zinc-500">
+              The photo stays next to this readout so you can correct the form below.
+            </p>
+          )}
+          <p className="text-xs leading-5 text-zinc-500">
+            Skipped fields: {REF_SHEET_SKIPPED_FIELDS.join(", ")}.
+          </p>
+        </div>
+      </div>
       <input
+        ref={inputRef}
         id={inputId}
+        name="refSheet"
         type="file"
-        accept="image/*,application/pdf"
+        accept="image/jpeg,image/png,image/webp,image/gif,image/heic,image/heif,.heic,.heif"
+        required={required}
         className="sr-only"
         aria-describedby={`${inputId}-hint`}
-        onChange={(event) => selectFile(event.target.files?.[0] ?? null)}
+        onChange={(event) => {
+          void selectFile(event.target.files?.[0] ?? null, false);
+        }}
       />
     </section>
   );
@@ -501,19 +712,37 @@ export function MatchEntryForm({
   defaultDate,
   initial,
   action = createGame,
-  submitLabel = "Save game",
-  pendingLabel = "Saving…",
-  idleMessage = "Saving refreshes the leaderboard.",
+  submitLabel = "Submit game",
+  pendingLabel = "Submitting…",
+  idleMessage = "This game stays pending until it is approved.",
   cancelHref,
+  requireSubmitter = true,
+  existingImageUrl,
+  submittedBy,
+  statusLabel,
 }: MatchEntryFormProps) {
   const refereeId = useId();
   const dateId = useId();
+  const submitterNameId = useId();
   const [state, formAction, pending] = useActionState(action, initialState);
   const [date, setDate] = useState(defaultDate);
   const [referee, setReferee] = useState(initial?.referee ?? "");
   const [teamA, setTeamA] = useState(() => lineRows("team-a", initial?.teamA));
   const [teamB, setTeamB] = useState(() => lineRows("team-b", initial?.teamB));
   const [rookies, setRookies] = useState<Record<string, boolean>>({});
+  const [sheetScore, setSheetScore] = useState<{
+    teamA: number | null;
+    teamB: number | null;
+  } | null>(null);
+  const [submitterChoice, setSubmitterChoice] = useState("");
+  const [guestName, setGuestName] = useState("");
+  const [addSubmitter, setAddSubmitter] = useState(false);
+  const [submitterRookie, setSubmitterRookie] = useState(false);
+  const guestResolution =
+    submitterChoice === "guest" && normalizeName(guestName)
+      ? resolvePlayerName(guestName, players)
+      : null;
+  const guestIsNew = guestResolution?.kind === "none";
 
   function setRookie(name: string, checked: boolean) {
     const key = normalizeName(name);
@@ -525,10 +754,27 @@ export function MatchEntryForm({
     setRookies((current) => ({ ...current, [key]: checked }));
   }
 
+  function applySheet(sheet: ParsedRefSheet) {
+    setReferee(sheet.referees.join(", "));
+    setTeamA(rowsFromSheet("team-a", sheet.teamA));
+    setTeamB(rowsFromSheet("team-b", sheet.teamB));
+    setSheetScore({ teamA: sheet.scoreTeamA, teamB: sheet.scoreTeamB });
+  }
+
   return (
     <form action={formAction} className="flex flex-col gap-6">
-      <Scoreboard teamA={teamA} teamB={teamB} players={players} rookies={rookies} />
-      <PaperSheetUpload />
+      <Scoreboard
+        teamA={teamA}
+        teamB={teamB}
+        players={players}
+        rookies={rookies}
+        sheetScore={sheetScore}
+      />
+      <RefSheetReview
+        required={requireSubmitter}
+        existingImageUrl={existingImageUrl}
+        onParsed={applySheet}
+      />
       <section className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
         <label
           htmlFor={dateId}
@@ -546,23 +792,115 @@ export function MatchEntryForm({
           className={`${textFieldClass} mt-3 max-w-xs`}
         />
       </section>
+      {requireSubmitter ? (
+        <section className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+          <h2 className="text-sm font-semibold tracking-wide text-zinc-950 uppercase dark:text-zinc-50">
+            Submitted by
+          </h2>
+          <label htmlFor="submitter-id" className="sr-only">
+            Submitted by
+          </label>
+          <select
+            id="submitter-id"
+            name="submitterId"
+            required
+            value={submitterChoice}
+            onChange={(event) => setSubmitterChoice(event.target.value)}
+            className={`${textFieldClass} mt-3`}
+          >
+            <option value="">Choose a player</option>
+            {players.map((player) => (
+              <option key={player.id} value={player.id}>
+                {player.name}
+                {player.isRookie ? " (rookie)" : ""}
+              </option>
+            ))}
+            <option value="guest">Other / Guest</option>
+          </select>
+          {submitterChoice === "guest" ? (
+            <div className="mt-3 flex flex-col gap-3">
+              <label htmlFor={submitterNameId} className="sr-only">
+                Guest name
+              </label>
+              <input
+                id={submitterNameId}
+                name="submitterName"
+                required
+                value={guestName}
+                placeholder="Name"
+                autoComplete="name"
+                onChange={(event) => setGuestName(event.target.value)}
+                className={textFieldClass}
+              />
+              {guestIsNew ? (
+                <div className="flex flex-col gap-2">
+                  <label className="inline-flex items-center gap-2 text-sm font-medium text-zinc-800 dark:text-zinc-100">
+                    <input
+                      type="checkbox"
+                      name="addSubmitter"
+                      checked={addSubmitter}
+                      onChange={(event) => setAddSubmitter(event.target.checked)}
+                      className="size-4 accent-zinc-950 dark:accent-zinc-50"
+                    />
+                    Add this player to the league immediately
+                  </label>
+                  <label className="inline-flex items-center gap-2 text-sm font-medium text-zinc-800 dark:text-zinc-100">
+                    <input
+                      type="checkbox"
+                      name="submitterRookie"
+                      checked={submitterRookie}
+                      disabled={!addSubmitter}
+                      onChange={(event) => setSubmitterRookie(event.target.checked)}
+                      className="size-4 accent-zinc-950 disabled:opacity-40 dark:accent-zinc-50"
+                    />
+                    Rookie
+                  </label>
+                  <p className="text-xs text-zinc-500">
+                    The rookie flag is saved when this player is added.
+                  </p>
+                </div>
+              ) : guestResolution?.kind === "ambiguous" ? (
+                <p className="text-xs text-zinc-500">
+                  Choose one of these players from the list.
+                </p>
+              ) : guestResolution ? (
+                <p className="text-xs text-zinc-500">This name is already in the league.</p>
+              ) : null}
+            </div>
+          ) : null}
+        </section>
+      ) : submittedBy || statusLabel ? (
+        <section className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
+          <h2 className="text-sm font-semibold tracking-wide text-zinc-950 uppercase dark:text-zinc-50">
+            Submission
+          </h2>
+          {submittedBy ? (
+            <p className="mt-3 text-sm text-zinc-700 dark:text-zinc-300">
+              Submitted by {submittedBy}
+            </p>
+          ) : null}
+          {statusLabel ? (
+            <p className="mt-1 text-sm text-zinc-500">Status: {statusLabel}</p>
+          ) : null}
+        </section>
+      ) : null}
       <section className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950">
         <h2 className="text-sm font-semibold tracking-wide text-zinc-950 uppercase dark:text-zinc-50">
-          Referee
+          Referees
         </h2>
         <div className="mt-3">
           <PlayerNameField
             id={refereeId}
-            name="referee"
-            label="Referee"
+            name="referees"
+            label="Referees"
             value={referee}
-            placeholder="Referee name"
+            placeholder="Ref, assistant"
             players={players}
             onChange={setReferee}
           />
         </div>
         <p className="mt-2 text-xs text-zinc-500">
-          Optional. Leave blank if the match had no referee.
+          Ref and assistant, separated by a comma. Leave blank if the match had no referee.
         </p>
         {players.length === 0 ? (
           <p className="mt-2 text-xs text-zinc-500">

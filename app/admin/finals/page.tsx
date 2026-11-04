@@ -44,6 +44,9 @@ export default function FinalsPage() {
           <Link href="/awards" className={outlineLink}>
             Awards
           </Link>
+          <Link href="/admin/league" className={outlineLink}>
+            Reset
+          </Link>
         </div>
       </header>
       <Suspense fallback={<FinalsFallback />}>

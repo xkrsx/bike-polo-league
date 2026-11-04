@@ -141,20 +141,16 @@ function matchStrength(query: string, candidateName: string): MatchStrength | nu
   return { score: 0.8 + bestSimilarity * 0.08, kind: "typo" };
 }
 
-export function resolvePlayerName(
-  query: string,
-  players: PlayerCandidate[],
-): PlayerResolution {
-  const normalized = normalizeName(query);
+interface RankedPlayer {
+  player: PlayerCandidate;
+  match: MatchStrength;
+}
 
-  if (!normalized) {
-    return { kind: "none" };
-  }
-
-  const ranked: Array<{ player: PlayerCandidate; match: MatchStrength }> = [];
+function rankPlayers(query: string, players: PlayerCandidate[]): RankedPlayer[] {
+  const ranked: RankedPlayer[] = [];
 
   for (const player of players) {
-    const match = matchStrength(normalized, player.name);
+    const match = matchStrength(query, player.name);
 
     if (match) {
       ranked.push({ player, match });
@@ -167,6 +163,32 @@ export function resolvePlayerName(
       left.player.name.localeCompare(right.player.name),
   );
 
+  return ranked;
+}
+
+function closeContenders(ranked: RankedPlayer[]): RankedPlayer[] {
+  const best = ranked[0];
+
+  if (!best) {
+    return [];
+  }
+
+  return ranked.filter(
+    (entry) => best.match.score - entry.match.score <= AMBIGUOUS_MARGIN,
+  );
+}
+
+export function resolvePlayerName(
+  query: string,
+  players: PlayerCandidate[],
+): PlayerResolution {
+  const normalized = normalizeName(query);
+
+  if (!normalized) {
+    return { kind: "none" };
+  }
+
+  const ranked = rankPlayers(normalized, players);
   const best = ranked[0];
 
   if (!best) {
@@ -177,9 +199,7 @@ export function resolvePlayerName(
     return { kind: "exact", player: best.player };
   }
 
-  const contenders = ranked.filter(
-    (entry) => best.match.score - entry.match.score <= AMBIGUOUS_MARGIN,
-  );
+  const contenders = closeContenders(ranked);
 
   if (contenders.length > 1) {
     return {
@@ -193,6 +213,97 @@ export function resolvePlayerName(
     player: best.player,
     reason: best.match.kind === "nickname" ? "nickname" : "typo",
   };
+}
+
+export interface ClassifiedPlayerName {
+  confidence: "high" | "low" | "none";
+  player: PlayerCandidate | null;
+  suggestions: PlayerCandidate[];
+}
+
+function looseSuggestion(
+  query: string,
+  players: PlayerCandidate[],
+): PlayerCandidate | null {
+  let best: { player: PlayerCandidate; score: number } | null = null;
+
+  for (const player of players) {
+    const name = normalizeName(player.name);
+
+    if (!name || name === query) {
+      continue;
+    }
+
+    const tokens = name.split(" ").filter(Boolean);
+    let score = 0;
+
+    if (
+      query.length >= 4 &&
+      (name.startsWith(query) || tokens.some((token) => token.startsWith(query)))
+    ) {
+      score = 0.72;
+    } else if (query.length >= 4) {
+      const distance = levenshtein(query, name);
+      const similarity = 1 - distance / Math.max(query.length, name.length);
+
+      if (distance > 0 && distance <= 3 && similarity >= 0.55) {
+        score = similarity * 0.7;
+      }
+    }
+
+    if (score <= 0) {
+      continue;
+    }
+
+    if (
+      !best ||
+      score > best.score ||
+      (score === best.score && player.name.localeCompare(best.player.name) < 0)
+    ) {
+      best = { player, score };
+    }
+  }
+
+  return best?.player ?? null;
+}
+
+/**
+ * Exact and unambiguous close matches are pre-selected.
+ * Ambiguous names stay unselected and are offered as "Did you mean".
+ * A weaker hint that is not a close match is also only a suggestion.
+ */
+export function classifyPlayerName(
+  query: string,
+  players: PlayerCandidate[],
+): ClassifiedPlayerName {
+  const normalized = normalizeName(query);
+
+  if (!normalized) {
+    return { confidence: "none", player: null, suggestions: [] };
+  }
+
+  const ranked = rankPlayers(normalized, players);
+  const best = ranked[0];
+
+  if (!best) {
+    const loose = looseSuggestion(normalized, players);
+
+    return loose
+      ? { confidence: "low", player: null, suggestions: [loose] }
+      : { confidence: "none", player: null, suggestions: [] };
+  }
+
+  const contenders = closeContenders(ranked);
+
+  if (contenders.length > 1) {
+    return {
+      confidence: "low",
+      player: null,
+      suggestions: contenders.slice(0, 3).map((entry) => entry.player),
+    };
+  }
+
+  return { confidence: "high", player: best.player, suggestions: [] };
 }
 
 export function playerCorrections(

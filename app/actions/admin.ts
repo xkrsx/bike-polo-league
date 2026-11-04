@@ -205,6 +205,7 @@ export async function deletePlayer(
           select: {
             gameStats: true,
             refereedGames: true,
+            assistedGames: true,
             finalsRoster: true,
             playoffLines: true,
           },
@@ -219,7 +220,7 @@ export async function deletePlayer(
     const blocked = playerDeleteBlockReason(
       player.name,
       player._count.gameStats,
-      player._count.refereedGames,
+      player._count.refereedGames + player._count.assistedGames,
     );
 
     if (blocked) {
@@ -406,7 +407,7 @@ export async function mergePlayer(
 
       const refereedGames = await tx.game.findMany({
         where: { refereeId: sourceId },
-        select: { id: true },
+        select: { id: true, assistantId: true },
       });
 
       for (const game of refereedGames) {
@@ -425,7 +426,43 @@ export async function mergePlayer(
 
         await tx.game.update({
           where: { id: game.id },
-          data: { refereeId: targetId },
+          data: {
+            refereeId: targetId,
+            ...(game.assistantId === targetId ? { assistantId: null } : {}),
+          },
+        });
+      }
+
+      const assistedGames = await tx.game.findMany({
+        where: { assistantId: sourceId },
+        select: { id: true, refereeId: true },
+      });
+
+      for (const game of assistedGames) {
+        if (game.refereeId === targetId) {
+          await tx.game.update({
+            where: { id: game.id },
+            data: { assistantId: null },
+          });
+          continue;
+        }
+
+        const targetPlays = await tx.gamePlayer.findUnique({
+          where: {
+            gameId_playerId: { gameId: game.id, playerId: targetId },
+          },
+          select: { playerId: true },
+        });
+
+        if (targetPlays) {
+          throw new PlayerInputError(
+            `${target.name} plays in a game that ${source.name} assisted. Fix that game before merging.`,
+          );
+        }
+
+        await tx.game.update({
+          where: { id: game.id },
+          data: { assistantId: targetId },
         });
       }
 

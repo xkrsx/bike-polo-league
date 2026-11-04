@@ -4,11 +4,11 @@ import type { Metadata } from "next";
 import { connection } from "next/server";
 import { prisma } from "@/lib/prisma";
 import { formatMatchDateInput } from "@/lib/match-sheet";
-import { MatchEntryForm } from "./match-entry-form";
+import { GameWizard } from "./game-wizard";
 
 export const metadata: Metadata = {
-  title: "New game",
-  description: "Enter a bike polo result",
+  title: "Submit games",
+  description: "Submit bike polo results from a ref sheet photo or one match entered by hand",
 };
 
 export default function NewGamePage() {
@@ -20,12 +20,11 @@ export default function NewGamePage() {
             BPV winter league 2026/2027
           </p>
           <h1 className="text-3xl font-semibold tracking-tight text-zinc-950 dark:text-zinc-50">
-            New game
+            Submit games
           </h1>
           <p className="max-w-2xl text-sm leading-6 text-zinc-600 dark:text-zinc-400">
-            Enter the sheet after the game. The score adds the other team&apos;s
-            own goals automatically, and a close name links to a player already
-            in the league.
+            Upload a ref sheet photo, or continue without a photo and enter one
+            match by hand. Every game stays pending until it is approved.
           </p>
         </div>
         <Link
@@ -50,7 +49,7 @@ async function MatchEntryLoader() {
   });
 
   return (
-    <MatchEntryForm players={players} defaultDate={formatMatchDateInput(new Date())} />
+    <GameWizard players={players} defaultDate={formatMatchDateInput(new Date())} />
   );
 }
 

@@ -116,6 +116,8 @@ async function main(): Promise<void> {
         scoreTeamA: teamScore(game.lines, TeamAssigned.TEAM_A),
         scoreTeamB: teamScore(game.lines, TeamAssigned.TEAM_B),
         refereeId,
+        status: "APPROVED",
+        submittedBy: "League",
         players: {
           create: game.lines.map((line) => {
             const playerId = players.get(line.playerKey);

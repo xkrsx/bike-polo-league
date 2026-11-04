@@ -210,6 +210,7 @@ export async function getLeaderboard(): Promise<PlayerStanding[]> {
       },
     }),
     prisma.game.findMany({
+      where: { status: "APPROVED" },
       select: {
         scoreTeamA: true,
         scoreTeamB: true,

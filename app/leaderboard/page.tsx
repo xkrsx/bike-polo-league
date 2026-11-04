@@ -57,7 +57,7 @@ export default async function LeaderboardPage() {
             href="/games/new"
             className="inline-flex h-10 items-center justify-center rounded-full bg-zinc-950 px-4 text-sm font-medium text-white transition-colors hover:bg-zinc-800 dark:bg-zinc-50 dark:text-zinc-950 dark:hover:bg-zinc-200"
           >
-            Enter game
+            Submit games
           </Link>
         </div>
       </header>

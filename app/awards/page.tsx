@@ -49,20 +49,23 @@ export default function AwardsPage() {
 
 async function AwardsLoader() {
   await connection();
-  const [standings, refereeRows, complete] = await Promise.all([
+  const [standings, officialGames, complete] = await Promise.all([
     getLeaderboard(),
-    prisma.game.groupBy({
-      by: ["refereeId"],
-      where: { refereeId: { not: null } },
-      _count: { _all: true },
+    prisma.game.findMany({
+      where: { status: "APPROVED" },
+      select: { refereeId: true, assistantId: true },
     }),
     areFinalsComplete(),
   ]);
   const referees = new Map<string, number>();
 
-  for (const row of refereeRows) {
-    if (row.refereeId) {
-      referees.set(row.refereeId, row._count._all);
+  for (const game of officialGames) {
+    for (const officialId of [game.refereeId, game.assistantId]) {
+      if (!officialId) {
+        continue;
+      }
+
+      referees.set(officialId, (referees.get(officialId) ?? 0) + 1);
     }
   }
 

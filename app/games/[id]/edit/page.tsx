@@ -5,6 +5,7 @@ import { notFound } from "next/navigation";
 import { connection } from "next/server";
 import { TeamAssigned } from "@prisma/client";
 import { updateGame } from "@/app/actions/game";
+import { gameStatusLabel } from "@/lib/game-status";
 import { prisma } from "@/lib/prisma";
 import { formatStoredMatchDate } from "@/lib/match-sheet";
 import {
@@ -33,9 +34,8 @@ export default function EditGamePage({
             Edit game
           </h1>
           <p className="max-w-2xl text-sm leading-6 text-zinc-600 dark:text-zinc-400">
-            Update the sheet for this game. The score adds the other team&apos;s
-            own goals automatically, and a close name links to a player already
-            in the league.
+            Update the sheet for this game. Ref and assistant stay in one
+            field. The score adds the other team&apos;s own goals automatically.
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap gap-2">
@@ -98,7 +98,11 @@ async function EditGameLoader({
       select: {
         id: true,
         date: true,
+        status: true,
+        submittedBy: true,
+        refSheetImageUrl: true,
         referee: { select: { name: true } },
+        assistant: { select: { name: true } },
         players: {
           select: {
             teamAssigned: true,
@@ -126,15 +130,19 @@ async function EditGameLoader({
       players={players}
       defaultDate={formatStoredMatchDate(game.date)}
       initial={{
-        referee: game.referee?.name ?? "",
+        referee: [game.referee?.name, game.assistant?.name].filter(Boolean).join(", "),
         teamA: linesFor(game.players, TeamAssigned.TEAM_A),
         teamB: linesFor(game.players, TeamAssigned.TEAM_B),
       }}
       action={updateGame.bind(null, game.id)}
       submitLabel="Save Changes"
       pendingLabel="Saving…"
-      idleMessage="Saving updates the leaderboard and the games list."
+      idleMessage="Saving updates this game. Only an approved game changes the leaderboard."
       cancelHref="/games"
+      requireSubmitter={false}
+      existingImageUrl={game.refSheetImageUrl}
+      submittedBy={game.submittedBy}
+      statusLabel={gameStatusLabel(game.status)}
     />
   );
 }

@@ -48,6 +48,12 @@ export default function PlayerAdminPage() {
           >
             Awards
           </Link>
+          <Link
+            href="/admin/league"
+            className="inline-flex h-10 items-center justify-center rounded-full border border-zinc-300 px-4 text-sm font-medium text-zinc-900 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-100 dark:hover:bg-zinc-900"
+          >
+            Reset
+          </Link>
         </div>
       </header>
       <Suspense fallback={<PlayerAdminFallback />}>
@@ -73,6 +79,7 @@ async function PlayerAdminLoader() {
         select: {
           gameStats: true,
           refereedGames: true,
+          assistedGames: true,
         },
       },
     },
@@ -91,7 +98,7 @@ async function PlayerAdminLoader() {
         customBonusLabel: player.customBonusLabel,
         customBonusValue: player.customBonusValue,
         gamesPlayed: player._count.gameStats,
-        gamesRefereed: player._count.refereedGames,
+        gamesRefereed: player._count.refereedGames + player._count.assistedGames,
       }))}
     />
   );

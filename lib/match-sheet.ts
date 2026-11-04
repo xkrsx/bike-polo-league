@@ -2,12 +2,16 @@ export const PLAYERS_PER_TEAM = 3;
 export const MAX_PLAYER_NAME_LENGTH = 80;
 export const MAX_STAT = 99;
 
+export const MAX_GAMES_PER_SHEET = 4;
+
 export interface MatchLine {
   name: string;
   goals: number;
   ownGoals: number;
   fouls: number;
   isRookie?: boolean;
+  /** Wizard selection. "new" keeps the typed name. An id links that player. */
+  playerId?: string | null;
 }
 
 /**
@@ -18,8 +22,24 @@ export interface MatchLine {
 export interface MatchSheet {
   date: Date;
   refereeName: string;
+  assistantName: string;
+  refereeId?: string | null;
+  assistantId?: string | null;
   teamA: MatchLine[];
   teamB: MatchLine[];
+}
+
+export function splitOfficialNames(value: string): string[] {
+  const trimmed = value.trim();
+
+  if (!trimmed) {
+    return [];
+  }
+
+  return trimmed
+    .split(/\s*(?:,|\/|&|\n|;|\band\b)\s*/i)
+    .map((part) => part.replace(/\s+/g, " ").trim())
+    .filter((part) => part.length > 0);
 }
 
 export function formatMatchDateInput(date: Date): string {

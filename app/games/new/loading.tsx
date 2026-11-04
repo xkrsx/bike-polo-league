@@ -6,7 +6,7 @@ export default function NewGameLoading() {
           BPV winter league 2026/2027
         </p>
         <h1 className="text-3xl font-semibold tracking-tight text-zinc-950 dark:text-zinc-50">
-          New game
+          Submit games
         </h1>
       </header>
       <div className="h-28 animate-pulse rounded-2xl bg-zinc-200 dark:bg-zinc-900" />
