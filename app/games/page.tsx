@@ -9,7 +9,7 @@ import { teamA, teamB } from "@/lib/team-colors";
 
 export const metadata: Metadata = {
   title: "Games",
-  description: "Winter Bike Polo games",
+  description: "BPV winter league 2026/2027 games",
 };
 
 const gameDateFormat = new Intl.DateTimeFormat("en", {
@@ -24,8 +24,8 @@ export default function GamesPage() {
     <main className="mx-auto flex w-full max-w-5xl flex-1 flex-col gap-8 px-4 py-10 sm:px-6">
       <header className="flex flex-col gap-4 sm:flex-row sm:items-end sm:justify-between">
         <div className="flex flex-col gap-3">
-          <p className="text-sm font-medium tracking-wide text-zinc-500 uppercase">
-            Winter Bike Polo
+          <p className="text-sm font-medium tracking-wide text-zinc-500">
+            BPV winter league 2026/2027
           </p>
           <h1 className="text-3xl font-semibold tracking-tight text-zinc-950 dark:text-zinc-50">
             Games
