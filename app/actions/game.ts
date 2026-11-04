@@ -4,7 +4,7 @@ import { Prisma, TeamAssigned } from "@prisma/client";
 import { revalidatePath } from "next/cache";
 import { redirect } from "next/navigation";
 import { prisma } from "@/lib/prisma";
-import { findDuplicateGame } from "@/lib/duplicate-match";
+import { findDuplicateGame, type DuplicateCandidate } from "@/lib/duplicate-match";
 import { GAME_PENDING, isGameStatus } from "@/lib/game-status";
 import { removeStoredRefSheet, saveRefSheetImage } from "@/lib/ref-sheet-storage";
 import {
@@ -608,9 +608,13 @@ async function saveMatch(
   tx: Prisma.TransactionClient,
   sheet: MatchSheet,
   meta: NewMatchMeta,
+  options?: { allowDuplicate?: boolean },
 ): Promise<void> {
   const match = await buildStoredMatch(tx, sheet);
-  await rejectDuplicate(tx, match);
+
+  if (!options?.allowDuplicate) {
+    await rejectDuplicate(tx, match);
+  }
 
   await tx.game.create({
     data: {
@@ -686,8 +690,10 @@ function revalidateMatchViews(gameId?: string): void {
   revalidatePath("/admin/finals");
   revalidatePath("/admin/league");
   revalidatePath("/admin/players");
+  revalidatePath("/games/[id]", "page");
 
   if (gameId) {
+    revalidatePath(`/games/${gameId}`);
     revalidatePath(`/games/${gameId}/edit`);
   }
 }
@@ -824,6 +830,15 @@ export async function submitGames(
     return { error: "Without a ref sheet photo, submit one match at a time." };
   }
 
+  const selecting = formData.get("selectGames") === "1";
+
+  if (
+    selecting &&
+    sheets.every((_, index) => formData.get(`includeGame${index}`) !== "1")
+  ) {
+    return { error: "Select at least one game to submit." };
+  }
+
   let imageUrl: string | null = null;
 
   try {
@@ -831,14 +846,28 @@ export async function submitGames(
     await prisma.$transaction(
       async (tx) => {
         const submittedBy = await resolveSubmitter(tx, submission);
+        let saved = 0;
 
         for (const [index, sheet] of sheets.entries()) {
+          if (selecting && formData.get(`includeGame${index}`) !== "1") {
+            continue;
+          }
+
           try {
-            await saveMatch(tx, sheet, {
-              status: GAME_PENDING,
-              submittedBy,
-              refSheetImageUrl: imageUrl,
-            });
+            await saveMatch(
+              tx,
+              sheet,
+              {
+                status: GAME_PENDING,
+                submittedBy,
+                refSheetImageUrl: imageUrl,
+              },
+              {
+                // "Save new game" inserts another pending row. The saved game is never updated.
+                allowDuplicate: formData.get(`game${index}KeepNew`) === "1",
+              },
+            );
+            saved += 1;
           } catch (error) {
             if (error instanceof MatchInputError) {
               throw new MatchInputError(`Match ${index + 1}: ${error.message}`);
@@ -846,6 +875,10 @@ export async function submitGames(
 
             throw error;
           }
+        }
+
+        if (saved === 0) {
+          throw new MatchInputError("Select at least one game to submit.");
         }
       },
       { timeout: 15000 },
@@ -981,4 +1014,222 @@ export async function moderateGame(formData: FormData): Promise<void> {
   }
 
   revalidateMatchViews(id);
+}
+
+export interface DuplicateCheckLine {
+  name: string;
+  playerId: string;
+  goals: string;
+  ownGoals: string;
+  fouls: string;
+}
+
+export interface DuplicateCheckInput {
+  date: string;
+  refereeName: string;
+  refereeId: string;
+  assistantName: string;
+  assistantId: string;
+  teamA: DuplicateCheckLine[];
+  teamB: DuplicateCheckLine[];
+}
+
+export interface DuplicateMatchPlayer {
+  id: string;
+  name: string;
+  goals: number;
+  ownGoals: number;
+  fouls: number;
+  isRookie: boolean;
+}
+
+export interface DuplicateMatchView {
+  id: string;
+  href: string;
+  dateLabel: string;
+  submittedBy: string;
+  scoreTeamA: number;
+  scoreTeamB: number;
+  refereeName: string | null;
+  assistantName: string | null;
+  teamA: DuplicateMatchPlayer[];
+  teamB: DuplicateMatchPlayer[];
+}
+
+export type DuplicateCheckResult =
+  | { ok: false; error: string }
+  | { ok: true; duplicate: DuplicateMatchView | null };
+
+function appendCheckLines(form: FormData, prefix: string, lines: DuplicateCheckLine[]): void {
+  for (const line of lines) {
+    form.append(`${prefix}Name`, line.name);
+    form.append(`${prefix}PlayerId`, line.playerId || "new");
+    form.append(`${prefix}Goals`, line.goals);
+    form.append(`${prefix}OwnGoals`, line.ownGoals);
+    form.append(`${prefix}Fouls`, line.fouls);
+  }
+}
+
+function duplicateCandidate(
+  sheet: MatchSheet,
+  roster: PlayerCandidate[],
+): DuplicateCandidate | null {
+  const pendingIds = new Set<string>();
+  const referee = officialPerson(sheet.refereeName, sheet.refereeId, roster, pendingIds);
+  const assistant = officialPerson(
+    sheet.assistantName,
+    sheet.assistantId,
+    roster,
+    pendingIds,
+  );
+  const officials = [referee, assistant].flatMap((person) => (person ? [person] : []));
+  const toSlot = (line: MatchLine, team: TeamAssigned): LineupSlot => ({
+    person: resolveLinkedPerson(line.name, line.playerId, roster, pendingIds),
+    team,
+    goals: line.goals,
+    ownGoals: line.ownGoals,
+    fouls: line.fouls,
+    isRookie: line.isRookie === true,
+  });
+  const teamA = sheet.teamA.map((line) => toSlot(line, TeamAssigned.TEAM_A));
+  const teamB = sheet.teamB.map((line) => toSlot(line, TeamAssigned.TEAM_B));
+  assertDistinct(officials, teamA, teamB);
+
+  if ([...teamA, ...teamB].some((line) => line.person.origin === "new")) {
+    return null;
+  }
+
+  const { scoreTeamA, scoreTeamB } = tallyMatchScore(sheet.teamA, sheet.teamB);
+  const officialId = (person: ResolvedPerson | null): string | null => {
+    if (!person) {
+      return null;
+    }
+
+    return person.origin === "existing" ? person.id : `new:${person.key}`;
+  };
+
+  return {
+    scoreTeamA,
+    scoreTeamB,
+    refereeId: officialId(referee),
+    assistantId: officialId(assistant),
+    players: [...teamA, ...teamB].map((line) => ({
+      playerId: line.person.origin === "existing" ? line.person.id : `new:${line.person.key}`,
+      team: line.team,
+      goals: line.goals,
+    })),
+  };
+}
+
+function viewPlayers(
+  players: Array<{
+    goals: number;
+    ownGoals: number;
+    fouls: number | null;
+    teamAssigned: TeamAssigned;
+    player: { id: string; name: string; isRookie: boolean };
+  }>,
+  team: TeamAssigned,
+): DuplicateMatchPlayer[] {
+  return players
+    .filter((row) => row.teamAssigned === team)
+    .sort((left, right) =>
+      left.player.name.localeCompare(right.player.name, undefined, { sensitivity: "base" }),
+    )
+    .map((row) => ({
+      id: row.player.id,
+      name: row.player.name,
+      goals: row.goals,
+      ownGoals: row.ownGoals,
+      fouls: row.fouls ?? 0,
+      isRookie: row.player.isRookie,
+    }));
+}
+
+const duplicateDateFormat = new Intl.DateTimeFormat("en", {
+  timeZone: "UTC",
+  month: "short",
+  day: "numeric",
+  year: "numeric",
+});
+
+export async function checkDuplicateMatch(
+  input: DuplicateCheckInput,
+): Promise<DuplicateCheckResult> {
+  try {
+    const form = new FormData();
+    form.set("date", input.date);
+    form.set("gameCount", "1");
+    form.set("game0Referee", input.refereeName);
+    form.set("game0RefereeId", input.refereeId || "new");
+    form.set("game0Assistant", input.assistantName);
+    form.set("game0AssistantId", input.assistantId || "new");
+    appendCheckLines(form, "game0TeamA", input.teamA);
+    appendCheckLines(form, "game0TeamB", input.teamB);
+    const [sheet] = parseSubmittedGames(form);
+    const roster = await prisma.player.findMany({
+      select: { id: true, name: true },
+      orderBy: { name: "asc" },
+    });
+    const candidate = duplicateCandidate(sheet, roster);
+
+    if (!candidate) {
+      return { ok: true, duplicate: null };
+    }
+
+    const found = await prisma.$transaction((tx) => findDuplicateGame(tx, candidate));
+
+    if (!found) {
+      return { ok: true, duplicate: null };
+    }
+
+    const game = await prisma.game.findUnique({
+      where: { id: found.id },
+      select: {
+        id: true,
+        date: true,
+        submittedBy: true,
+        scoreTeamA: true,
+        scoreTeamB: true,
+        referee: { select: { name: true } },
+        assistant: { select: { name: true } },
+        players: {
+          select: {
+            goals: true,
+            ownGoals: true,
+            fouls: true,
+            teamAssigned: true,
+            player: { select: { id: true, name: true, isRookie: true } },
+          },
+        },
+      },
+    });
+
+    if (!game) {
+      return { ok: true, duplicate: null };
+    }
+
+    return {
+      ok: true,
+      duplicate: {
+        id: game.id,
+        href: `/games/${game.id}`,
+        dateLabel: duplicateDateFormat.format(game.date),
+        submittedBy: game.submittedBy,
+        scoreTeamA: game.scoreTeamA,
+        scoreTeamB: game.scoreTeamB,
+        refereeName: game.referee?.name ?? null,
+        assistantName: game.assistant?.name ?? null,
+        teamA: viewPlayers(game.players, TeamAssigned.TEAM_A),
+        teamB: viewPlayers(game.players, TeamAssigned.TEAM_B),
+      },
+    };
+  } catch (error) {
+    if (error instanceof MatchInputError) {
+      return { ok: false, error: error.message };
+    }
+
+    console.error(error);
+    return { ok: false, error: "Could not check this match for duplicates." };
+  }
 }

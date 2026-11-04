@@ -152,7 +152,12 @@ async function GamesList() {
             className="rounded-2xl border border-zinc-200 bg-white p-4 shadow-sm dark:border-zinc-800 dark:bg-zinc-950 sm:p-5"
           >
             <div className="grid grid-cols-[1fr_auto_1fr] items-center gap-3">
-              <p className="text-sm text-zinc-500">{dateLabel}</p>
+              <Link
+                href={`/games/${game.id}`}
+                className="text-sm text-zinc-500 underline-offset-4 hover:underline"
+              >
+                {dateLabel}
+              </Link>
               <p
                 aria-label={`Red ${game.scoreTeamA}, blue ${game.scoreTeamB}`}
                 className="text-2xl font-semibold tabular-nums"
