@@ -11,6 +11,13 @@ enum TeamAssigned {
   TEAM_B
 }
 
+enum PlayoffRound {
+  SEMIFINAL_1
+  SEMIFINAL_2
+  THIRD_PLACE
+  GRAND_FINAL
+}
+
 model Player {
   id                String       @id @default(cuid())
   name              String
@@ -21,8 +28,10 @@ model Player {
   customBonusLabel  String       @default("")
   customBonusValue  Int          @default(0)
   createdAt         DateTime     @default(now())
-  refereedGames     Game[]       @relation("GameReferee")
+  refereedGames     Game[]         @relation("GameReferee")
   gameStats         GamePlayer[]
+  finalsRoster      FinalsRoster[]
+  playoffLines      PlayoffLine[]
 }
 
 model Game {
@@ -47,4 +56,55 @@ model GamePlayer {
   player       Player        @relation(fields: [playerId], references: [id], onDelete: Restrict)
 
   @@id([gameId, playerId])
+}
+
+model Finals {
+  id        String         @id @default(cuid())
+  createdAt DateTime       @default(now())
+  locked    Boolean        @default(true) // Snake-draft rosters stay fixed for every playoff game
+  teams     FinalsTeam[]
+  matches   PlayoffMatch[]
+}
+
+model FinalsTeam {
+  id       String         @id @default(cuid())
+  finalsId String
+  number   Int
+  finals   Finals         @relation(fields: [finalsId], references: [id], onDelete: Cascade)
+  members  FinalsRoster[]
+
+  @@unique([finalsId, number])
+}
+
+model FinalsRoster {
+  teamId   String
+  playerId String     @unique
+  seedRank Int
+  team     FinalsTeam @relation(fields: [teamId], references: [id], onDelete: Cascade)
+  player   Player     @relation(fields: [playerId], references: [id], onDelete: Restrict)
+
+  @@id([teamId, playerId])
+}
+
+model PlayoffMatch {
+  id         String       @id @default(cuid())
+  finalsId   String
+  round      PlayoffRound
+  homeNumber Int?
+  awayNumber Int?
+  finals     Finals       @relation(fields: [finalsId], references: [id], onDelete: Cascade)
+  lines      PlayoffLine[]
+
+  @@unique([finalsId, round])
+}
+
+model PlayoffLine {
+  matchId  String
+  playerId String
+  goals    Int          @default(0)
+  match    PlayoffMatch @relation(fields: [matchId], references: [id], onDelete: Cascade)
+  player   Player       @relation(fields: [playerId], references: [id], onDelete: Restrict)
+
+  @@id([matchId, playerId])
+  @@index([playerId])
 }

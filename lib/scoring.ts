@@ -110,6 +110,7 @@ function emptyStanding(player: PlayerRecord): PlayerStanding {
 export function calculateStandings(
   players: PlayerRecord[],
   games: GameRecord[],
+  playoffGoals: ReadonlyMap<string, number> = new Map(),
 ): PlayerStanding[] {
   const standings = new Map<string, PlayerStanding>(
     players.map((player) => [player.id, emptyStanding(player)]),
@@ -164,6 +165,18 @@ export function calculateStandings(
     }
   }
 
+  // Playoff goals count toward goals scored. They do not add wins,
+  // games played, fouls, clean sheets, or goal difference.
+  for (const [playerId, goals] of playoffGoals) {
+    const standing = standings.get(playerId);
+
+    if (!standing || goals <= 0) {
+      continue;
+    }
+
+    standing.goals += goals;
+  }
+
   for (const standing of standings.values()) {
     standing.points += standing.bonusPoints;
   }
@@ -186,7 +199,7 @@ export function calculateStandings(
 }
 
 export async function getLeaderboard(): Promise<PlayerStanding[]> {
-  const [players, games] = await Promise.all([
+  const [players, games, playoffGoalRows] = await Promise.all([
     prisma.player.findMany({
       select: {
         id: true,
@@ -212,7 +225,15 @@ export async function getLeaderboard(): Promise<PlayerStanding[]> {
         },
       },
     }),
+    prisma.playoffLine.groupBy({
+      by: ["playerId"],
+      _sum: { goals: true },
+    }),
   ]);
+
+  const playoffGoals = new Map(
+    playoffGoalRows.map((row) => [row.playerId, row._sum.goals ?? 0]),
+  );
 
   return calculateStandings(
     players,
@@ -228,5 +249,6 @@ export async function getLeaderboard(): Promise<PlayerStanding[]> {
         isRookie: appearance.player.isRookie,
       })),
     })),
+    playoffGoals,
   );
 }

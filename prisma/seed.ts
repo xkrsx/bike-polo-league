@@ -83,6 +83,7 @@ function teamScore(lines: SeedLine[], team: TeamAssigned): number {
 }
 
 async function main(): Promise<void> {
+  await prisma.finals.deleteMany();
   await prisma.gamePlayer.deleteMany();
   await prisma.game.deleteMany();
   await prisma.player.deleteMany();

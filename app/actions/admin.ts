@@ -38,6 +38,8 @@ class PlayerInputError extends Error {
 function revalidatePlayerViews(): void {
   revalidatePath("/leaderboard");
   revalidatePath("/admin/players");
+  revalidatePath("/admin/finals");
+  revalidatePath("/awards");
   revalidatePath("/games");
   revalidatePath("/games/new");
   revalidatePath("/games/[id]/edit", "page");
@@ -203,6 +205,8 @@ export async function deletePlayer(
           select: {
             gameStats: true,
             refereedGames: true,
+            finalsRoster: true,
+            playoffLines: true,
           },
         },
       },
@@ -220,6 +224,10 @@ export async function deletePlayer(
 
     if (blocked) {
       return { error: blocked };
+    }
+
+    if (player._count.finalsRoster > 0 || player._count.playoffLines > 0) {
+      return { error: `${player.name} is in the finals and cannot be deleted.` };
     }
 
     await prisma.player.delete({ where: { id } });
@@ -244,6 +252,82 @@ export async function deletePlayer(
   revalidatePlayerViews();
 
   return { error: null };
+}
+
+async function moveFinalsIdentity(
+  tx: Prisma.TransactionClient,
+  sourceId: string,
+  targetId: string,
+  sourceName: string,
+  targetName: string,
+): Promise<void> {
+  const seats = await tx.finalsRoster.findMany({
+    where: { playerId: sourceId },
+    select: { teamId: true, team: { select: { finalsId: true } } },
+  });
+
+  for (const seat of seats) {
+    const targetSeat = await tx.finalsRoster.findFirst({
+      where: {
+        playerId: targetId,
+        team: { finalsId: seat.team.finalsId },
+      },
+      select: { teamId: true },
+    });
+
+    if (targetSeat && targetSeat.teamId !== seat.teamId) {
+      throw new PlayerInputError(
+        `${sourceName} and ${targetName} are on different finals teams. Resolve the finals before merging them.`,
+      );
+    }
+
+    if (targetSeat) {
+      await tx.finalsRoster.delete({
+        where: { teamId_playerId: { teamId: seat.teamId, playerId: sourceId } },
+      });
+    } else {
+      await tx.finalsRoster.update({
+        where: { teamId_playerId: { teamId: seat.teamId, playerId: sourceId } },
+        data: { playerId: targetId },
+      });
+    }
+  }
+
+  const lines = await tx.playoffLine.findMany({
+    where: { playerId: sourceId },
+    select: { matchId: true, goals: true },
+  });
+
+  for (const line of lines) {
+    const existing = await tx.playoffLine.findUnique({
+      where: {
+        matchId_playerId: { matchId: line.matchId, playerId: targetId },
+      },
+      select: { goals: true },
+    });
+
+    if (!existing) {
+      await tx.playoffLine.update({
+        where: {
+          matchId_playerId: { matchId: line.matchId, playerId: sourceId },
+        },
+        data: { playerId: targetId },
+      });
+      continue;
+    }
+
+    await tx.playoffLine.update({
+      where: {
+        matchId_playerId: { matchId: line.matchId, playerId: targetId },
+      },
+      data: { goals: existing.goals + line.goals },
+    });
+    await tx.playoffLine.delete({
+      where: {
+        matchId_playerId: { matchId: line.matchId, playerId: sourceId },
+      },
+    });
+  }
 }
 
 export async function mergePlayer(
@@ -345,6 +429,7 @@ export async function mergePlayer(
         });
       }
 
+      await moveFinalsIdentity(tx, sourceId, targetId, source.name, target.name);
       await tx.player.delete({ where: { id: sourceId } });
     });
   } catch (error) {

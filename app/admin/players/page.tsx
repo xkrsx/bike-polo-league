@@ -24,16 +24,31 @@ export default function PlayerAdminPage() {
           <p className="max-w-2xl text-sm leading-6 text-zinc-600 dark:text-zinc-400">
             Edit a name, rookie status, and bonuses. Costume is +5. A custom
             bonus adds its own label and value. Podium places are worth 15, 10,
-            or 5. Players in a game cannot be deleted; merge them into another
-            player to move those games.
+            or 5. The finals bracket writes those podium points for the top 12
+            when the playoffs finish. Players in a game cannot be deleted;
+            merge them into another player to move those games.
           </p>
         </div>
-        <Link
-          href="/leaderboard"
-          className="inline-flex h-10 shrink-0 items-center justify-center rounded-full border border-zinc-300 px-4 text-sm font-medium text-zinc-900 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-100 dark:hover:bg-zinc-900"
-        >
-          Leaderboard
-        </Link>
+        <div className="flex shrink-0 flex-wrap gap-2">
+          <Link
+            href="/leaderboard"
+            className="inline-flex h-10 items-center justify-center rounded-full border border-zinc-300 px-4 text-sm font-medium text-zinc-900 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-100 dark:hover:bg-zinc-900"
+          >
+            Leaderboard
+          </Link>
+          <Link
+            href="/admin/finals"
+            className="inline-flex h-10 items-center justify-center rounded-full border border-zinc-300 px-4 text-sm font-medium text-zinc-900 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-100 dark:hover:bg-zinc-900"
+          >
+            Finals
+          </Link>
+          <Link
+            href="/awards"
+            className="inline-flex h-10 items-center justify-center rounded-full border border-zinc-300 px-4 text-sm font-medium text-zinc-900 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-100 dark:hover:bg-zinc-900"
+          >
+            Awards
+          </Link>
+        </div>
       </header>
       <Suspense fallback={<PlayerAdminFallback />}>
         <PlayerAdminLoader />

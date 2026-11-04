@@ -28,6 +28,19 @@ export function isPodiumPoints(value: number): boolean {
   return PODIUM_OPTIONS.some((option) => option.points === value);
 }
 
+export function podiumPointsForPlace(place: 1 | 2 | 3 | 4): number {
+  switch (place) {
+    case 1:
+      return 15;
+    case 2:
+      return 10;
+    case 3:
+      return 5;
+    case 4:
+      return 0;
+  }
+}
+
 export function sumExtraPoints(costumeBonus: boolean, customBonusValue: number): number {
   return (costumeBonus ? COSTUME_BONUS_POINTS : 0) + customBonusValue;
 }

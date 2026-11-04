@@ -24,7 +24,8 @@ export default async function LeaderboardPage() {
           <p className="max-w-2xl text-sm leading-6 text-zinc-600 dark:text-zinc-400">
             Win 5, draw 2, loss 1. A team with a scoring rookie gets 1 extra
             point, and that rookie gets 1 more. Extra and podium bonuses are
-            added on top. Ties break on goal difference, then goals scored.
+            added on top. Playoff goals count toward goals scored. Ties break
+            on goal difference, then goals scored.
           </p>
         </div>
         <div className="flex shrink-0 flex-wrap gap-2">
@@ -39,6 +40,18 @@ export default async function LeaderboardPage() {
             className="inline-flex h-10 items-center justify-center rounded-full border border-zinc-300 px-4 text-sm font-medium text-zinc-900 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-100 dark:hover:bg-zinc-900"
           >
             Players
+          </Link>
+          <Link
+            href="/admin/finals"
+            className="inline-flex h-10 items-center justify-center rounded-full border border-zinc-300 px-4 text-sm font-medium text-zinc-900 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-100 dark:hover:bg-zinc-900"
+          >
+            Finals
+          </Link>
+          <Link
+            href="/awards"
+            className="inline-flex h-10 items-center justify-center rounded-full border border-zinc-300 px-4 text-sm font-medium text-zinc-900 transition-colors hover:bg-zinc-100 dark:border-zinc-700 dark:text-zinc-100 dark:hover:bg-zinc-900"
+          >
+            Awards
           </Link>
           <Link
             href="/games/new"

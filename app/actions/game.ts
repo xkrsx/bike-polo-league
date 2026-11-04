@@ -428,6 +428,8 @@ function sameUtcDay(left: Date, right: Date): boolean {
 function revalidateMatchViews(gameId?: string): void {
   revalidatePath("/leaderboard");
   revalidatePath("/games");
+  revalidatePath("/awards");
+  revalidatePath("/admin/finals");
 
   if (gameId) {
     revalidatePath(`/games/${gameId}/edit`);
