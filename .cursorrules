@@ -4,3 +4,10 @@ You are an expert Full-Stack developer in TypeScript, Next.js (App Router), Tail
 - Keep state local unless global state is explicitly needed.
 - Always add proper TypeScript interfaces for data structures.
 - Respond concisely.
+
+## Project Specifics & Architecture Constraints
+- Next.js uses experimental `cacheComponents`.
+- Do NOT use `export const dynamic` route segment configs due to compatibility issues with `cacheComponents`.
+- Admin authentication must rely on `isAdmin()` from `@/lib/admin-session`.
+- Mark components with `'use client'` only when client-side state, browser APIs, or interactivity are explicitly required.
+- Provide production-ready code without unnecessary placeholders.
